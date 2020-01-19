@@ -1,0 +1,166 @@
+---
+title: "Multi-level Pricing Model"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE, warning = FALSE}
+library(rstan)
+library(loo)
+library(tidyverse)
+library(here)
+setwd(here())
+```
+
+```{r}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+
+### The Data
+
+```{r}
+model_data <- read.csv("model_data.csv")
+str(model_data)
+colnames(model_data)
+colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
+```
+
+The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+
+```{r coding the data}
+#level 1 n
+N_obs = nrow(model_data)
+#level 2 n
+N_stores = length(unique(model_data$store_id))
+#level 3 n
+N_banners = length(unique(model_data$banner_id))
+#level 4 n
+N_regions = length(unique(model_data$region_id))
+#level 4 n
+N_upc = length(unique(model_data$UPC))
+
+#cluster ids
+store_id = as.numeric(as.factor(model_data$store_id))
+banner_id = as.numeric(as.factor(model_data$banner_id))
+region_id = as.numeric(as.factor(model_data$region_id))
+upc_id = as.numeric(as.factor(model_data$UPC))
+
+## Create a vector of school IDs where j-th element gives school ID for class ID j
+#schoolLookupVec <- unique(classroom[c("classid","schoolid")])[,"schoolid"]
+#upper_level_lookup <- unique(d[c("lower_id", "upper_id")])[,"upper_id"]
+banner_level_lookup <- unique(model_data[c("store_id", "banner_id")])[,"banner_id"]
+
+#continuous outcome
+Price = as.numeric(model_data$Price)
+```
+
+```{r stan data dump}
+stan_rdump(c("N_obs", "N_stores", "N_banners", "N_regions", "N_upc",
+             "store_id", "banner_id", "region_id", "upc_id",
+             "banner_level_lookup", 
+             "Price"), file="stan_data_dump.R")
+
+rm(banner_id); rm(banner_level_lookup); rm(N_banners); rm(N_obs); rm(N_regions);
+rm(N_stores); rm(N_upc); rm(Price); rm(region_id); rm(store_id); rm(upc_id)
+rm(model_data)
+
+data <- read_rdump("stan_data_dump.R") #import data
+```
+
+### Model 1- Single level model
+
+```{r}
+writeLines(readLines("models/single_level.stan"))
+m1 <- stanc(file = "models/single_level.stan") # Check Stan file
+m1 <- stan_model(stanc_ret = m1) # Compile Stan code
+```
+
+```{r}
+fit1 <- sampling(m1, 
+                warmup=200, 
+                iter=2000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+
+rm(m1)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit1)
+print(names(list_of_draws))
+print(fit1, c("beta_0")) #"beta_1"
+fit1_loo <- loo(fit1)
+fit1_loo
+```
+
+### Model 2- Two level model
+
+```{r}
+writeLines(readLines("models/two_level.stan"))
+m2 <- stanc(file = "models/two_level.stan") # Check Stan file
+m2 <- stan_model(stanc_ret = m2) # Compile Stan code
+```
+
+```{r}
+fit2 <- sampling(m2, 
+                warmup=200, 
+                iter=2000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m2)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit2)
+print(names(list_of_draws))
+print(fit2, c("beta_0j")) #"beta_1"
+fit2_loo <- loo(fit2)
+fit2_loo
+```
+
+### Model 3- Three Level Model
+
+```{r}
+writeLines(readLines("models/three_level.stan"))
+m3 <- stanc(file = "models/three_level.stan") # Check Stan file
+m3 <- stan_model(stanc_ret = m3) # Compile Stan code
+```
+
+```{r}
+fit3 <- sampling(m3, 
+                warmup=200, 
+                iter=2000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m3)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit3)
+print(names(list_of_draws))
+print(fit3, c("beta_0k", "beta_0jk")) #"beta_1"
+fit3_loo <- loo(fit3)
+fit3_loo
+```
+
+
+### Model Comparison
+
+```{r}
+# Compare log likelihoods
+loo_compare(fit1_loo, fit2_loo, fit3_loo)
+```
+
