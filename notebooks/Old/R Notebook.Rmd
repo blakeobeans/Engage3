@@ -1,15 +1,9 @@
 ---
 title: "Multi-level Pricing Model"
-output:
-  html_document:
-    df_print: paged
-editor_options:
+output: html_notebook
+editor_options: 
   chunk_output_type: console
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(eval = FALSE)
-```
 
 ```{r, message = FALSE, warning = FALSE}
 library(rstan)
@@ -17,7 +11,6 @@ library(loo)
 library(tidyverse)
 library(here)
 setwd(here())
-#load("D:/Google Drive/R/RStan/Engage3/.RData")
 ```
 
 ```{r}
@@ -31,6 +24,8 @@ We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them us
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
+str(model_data)
+colnames(model_data)
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
 ```
 
@@ -52,6 +47,7 @@ N_upc = length(unique(model_data$UPC))
 store_id = as.numeric(as.factor(model_data$store_id))
 banner_id = as.numeric(as.factor(model_data$banner_id))
 region_id = as.numeric(as.factor(model_data$region_id))
+
 upc_id = as.numeric(as.factor(model_data$UPC))
 
 ## Create a vector of school IDs where j-th element gives school ID for class ID j
@@ -59,11 +55,11 @@ upc_id = as.numeric(as.factor(model_data$UPC))
 banner_level_lookup <- unique(model_data[c("store_id", "banner_id")])[,"banner_id"]
 region_level_lookup <- unique(model_data[c("store_id", "region_id")])[,"region_id"]
 
+length(store_id)
+
 #continuous outcome
 Price = as.numeric(model_data$Price)
 ```
-
-Consistent with Stan's best practices, we're going to dump the processed data into a separate file and clear our environment. Then, we'll read it back in.
 
 ```{r stan data dump}
 stan_rdump(c("N_obs", "N_stores", "N_banners", "N_regions", "N_upc",
@@ -78,36 +74,16 @@ rm(model_data); rm(region_level_lookup)
 data <- read_rdump("stan_data_dump.R") #import data
 ```
 
-### Preview
-
-We can see that the price, which is always positive, can be scaled. However, the log is highly skewed. A scaling works better. The scaling should be performed in Stan.
+### Model 1- Single level model
 
 ```{r}
-qplot(data$Price)
-qplot(log(data$Price))
-qplot(scale(data$Price))
+writeLines(readLines("models/single_level.stan"))
+m1 <- stanc(file = "models/single_level.stan") # Check Stan file
+m1 <- stan_model(stanc_ret = m1) # Compile Stan code
 ```
 
-
-### Model 1- Single level model w/o Priors, Generated Quantities
-
-We'll just model price as a function of UPC. 
-
 ```{r}
-writeLines(readLines("models/1_single_level_no_prior_no_gen.stan"))
-```
-
-Next, we'll compile the model. This allows us to check for errors.
-
-```{r}
-m1_upc <- stanc(file = "models/1_single_level_no_prior_no_gen.stan") # Check Stan file
-m1_upc <- stan_model(stanc_ret = m1_upc) # Compile Stan code
-```
-
-120 seconds total
-
-```{r}
-fit1_upc <- sampling(m1_upc, 
+fit1 <- sampling(m1, 
                 warmup=400, 
                 iter=4000, 
                 seed=1, 
@@ -115,34 +91,84 @@ fit1_upc <- sampling(m1_upc,
                 chains = 1,
                 cores = getOption("mc.cores", 1L),
                 verbose = TRUE)
-rm(m1_upc)
+
+rm(m1)
 ```
 
 ```{r}
-list_of_draws <- rstan::extract(fit1_upc)
+list_of_draws <- rstan::extract(fit1)
 print(names(list_of_draws))
-print(fit1_upc, c("beta_0", "beta_1")) 
+print(fit1, c("beta_0")) #"beta_1"
+fit1_loo <- loo(fit1)
+fit1_loo
 ```
 
-### Model 2- Single level model w/ Priors, w/o Generated Quantities
-
-We'll just model price as a function of UPC. 
+### Model 2- Two level model
 
 ```{r}
-writeLines(readLines("models/2_single_level_priors_no_gen.stan"))
+writeLines(readLines("models/two_level.stan"))
+m2 <- stanc(file = "models/two_level.stan") # Check Stan file
+m2 <- stan_model(stanc_ret = m2) # Compile Stan code
 ```
 
-Next, we'll compile the model. This allows us to check for errors.
-
 ```{r}
-m2_upc <- stanc(file = "models/2_single_level_priors_no_gen.stan") # Check Stan file
-m2_upc <- stan_model(stanc_ret = m2_upc) # Compile Stan code
+fit2 <- sampling(m2, 
+                warmup=200, 
+                iter=2000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m2)
 ```
 
-67 seconds total.
+```{r}
+list_of_draws <- rstan::extract(fit2)
+print(names(list_of_draws))
+print(fit2, c("beta_0j")) #"beta_1"
+fit2_loo <- loo(fit2)
+fit2_loo
+```
+
+### Model 3- Three Level Model
 
 ```{r}
-fit2_upc <- sampling(m2_upc, 
+writeLines(readLines("models/three_level.stan"))
+m3 <- stanc(file = "models/three_level.stan") # Check Stan file
+m3 <- stan_model(stanc_ret = m3) # Compile Stan code
+```
+
+```{r}
+fit3 <- sampling(m3, 
+                warmup=200, 
+                iter=2000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m3)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit3)
+print(names(list_of_draws))
+print(fit3, c("beta_0k", "beta_0jk")) #"beta_1"
+fit3_loo <- loo(fit3)
+fit3_loo
+```
+
+### Model 4- Four Level Model
+
+```{r}
+writeLines(readLines("models/four_level.stan"))
+m4 <- stanc(file = "models/four_level.stan") # Check Stan file
+m4 <- stan_model(stanc_ret = m4) # Compile Stan code
+```
+
+```{r}
+fit4 <- sampling(m4, 
                 warmup=400, 
                 iter=4000, 
                 seed=1, 
@@ -150,23 +176,21 @@ fit2_upc <- sampling(m2_upc,
                 chains = 1,
                 cores = getOption("mc.cores", 1L),
                 verbose = TRUE)
-rm(m2_upc)
+rm(m4)
 ```
 
 ```{r}
-list_of_draws <- rstan::extract(fit1_upc)
+list_of_draws <- rstan::extract(fit3)
 print(names(list_of_draws))
-print(fit1_upc, c("beta_0", "beta_1")) 
+print(fit3, c("beta_0k", "beta_0jk")) #"beta_1"
+fit3_loo <- loo(fit3)
+fit3_loo
 ```
-
-### Model 3- Single level model w/ everything
 
 ### Model Comparison
 
 ```{r}
-fit1_upc_loo <- loo(fit1_upc)
-fit1_upc_loo
 # Compare log likelihoods
-loo_compare(fit1_loo, fit2_loo, fit3_loo, fit1_upc_loo)
+loo_compare(fit1_loo, fit2_loo, fit3_loo)
 ```
 

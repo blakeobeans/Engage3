@@ -7,8 +7,13 @@ str(model_data)
 colnames(model_data)
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
 
-
-
+## Create a vector of school IDs where j-th element gives school ID for class ID j
+#schoolLookupVec <- unique(classroom[c("classid","schoolid")])[,"schoolid"]
+#upper_level_lookup <- unique(d[c("lower_id", "upper_id")])[,"upper_id"]
+banner_level_lookup <- unique(model_data[c("store_id", "banner_id")])[,"banner_id"]
+region_level_lookup <- unique(model_data[c("banner_id", "region_id")])[,"region_id"]
+region_level_lookup
+as.numeric(region_level_lookup)
 ###get ready
 #fileName <- "./two_level_model.stan"
 #stan_code <- readChar(fileName, file.info(fileName)$size)
