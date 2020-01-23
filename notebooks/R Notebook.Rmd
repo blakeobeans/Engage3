@@ -118,6 +118,11 @@ rm(m1_upc)
 ```
 
 ```{r}
+pairs(fit1_upc)
+```
+
+
+```{r}
 list_of_draws <- rstan::extract(fit1_upc)
 print(names(list_of_draws))
 print(fit1_upc, c("beta_0", "beta_1")) 
