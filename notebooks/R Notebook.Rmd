@@ -17,12 +17,11 @@ library(loo)
 library(tidyverse)
 library(here)
 setwd(here())
-#load("D:/Google Drive/R/RStan/Engage3/.RData")
 ```
 
 ```{r}
-rstan_options(auto_write = TRUE)
-options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE) #cache model
+options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
 We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
@@ -69,18 +68,18 @@ Consistent with Stan's best practices, we're going to dump the processed data in
 stan_rdump(c("N_obs", "N_stores", "N_banners", "N_regions", "N_upc",
              "store_id", "banner_id", "region_id", "upc_id",
              "banner_level_lookup", "region_level_lookup",
-             "Price"), file="stan_data_dump.R")
+             "Price"), file="data/stan_data_dump.R")
 
 rm(banner_id); rm(banner_level_lookup); rm(N_banners); rm(N_obs); rm(N_regions);
 rm(N_stores); rm(N_upc); rm(Price); rm(region_id); rm(store_id); rm(upc_id)
 rm(model_data); rm(region_level_lookup)
 
-data <- read_rdump("stan_data_dump.R") #import data
+data <- read_rdump("data/stan_data_dump.R") #import data
 ```
 
 ### Preview
 
-We can see that the price, which is always positive, can be scaled. However, the log is highly skewed. A scaling works better. The scaling should be performed in Stan.
+We can see that the price, which is always positive, should be transformed. This makes sampling much faster. However, the log is highly skewed. A standization scaling works better. The scaling will be performed in Stan.
 
 ```{r}
 qplot(data$Price)
@@ -104,15 +103,15 @@ m1_upc <- stanc(file = "models/1_single_level_no_prior_no_gen.stan") # Check Sta
 m1_upc <- stan_model(stanc_ret = m1_upc) # Compile Stan code
 ```
 
-120 seconds total
+When running 4 chains in parallel, the time to execute is as long as the longest chain. 
 
 ```{r}
-fit1_upc <- sampling(m1_upc, 
-                warmup=400, 
-                iter=4000, 
-                seed=1, 
+fit1_upc <- sampling(m1_upc, #use sampling function, rather than stan()
+                warmup=1000, #recommended in Betancourt "RStan Workflow"
+                iter=2000, #TOTAL iterations- first 1000 are warmup
+                seed=1, #ensures reproducibility
                 data=data, 
-                chains = 1,
+                chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
                 cores = getOption("mc.cores", 1L),
                 verbose = TRUE)
 rm(m1_upc)
@@ -126,7 +125,7 @@ print(fit1_upc, c("beta_0", "beta_1"))
 
 ### Model 2- Single level model w/ Priors, w/o Generated Quantities
 
-We'll just model price as a function of UPC. 
+We'll add some priors. 
 
 ```{r}
 writeLines(readLines("models/2_single_level_priors_no_gen.stan"))
@@ -161,11 +160,48 @@ print(fit1_upc, c("beta_0", "beta_1"))
 
 ### Model 3- Single level model w/ everything
 
-### Model Comparison
+We'll add some generated quantities 
 
 ```{r}
-fit1_upc_loo <- loo(fit1_upc)
-fit1_upc_loo
+writeLines(readLines("models/3_single_level_priors_gen.stan"))
+```
+
+Next, we'll compile the model. This allows us to check for errors.
+
+```{r}
+m3_upc <- stanc(file = "models/3_single_level_priors_gen.stan") # Check Stan file
+m3_upc <- stan_model(stanc_ret = m3_upc) # Compile Stan code
+```
+
+1650 seconds total.
+
+```{r}
+fit3_upc <- sampling(m3_upc, 
+                warmup=400, 
+                iter=4000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m3_upc)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit1_upc)
+print(names(list_of_draws))
+print(fit1_upc, c("beta_0", "beta_1")) 
+```
+
+```{r}
+fit3_upc_loo <- loo(fit3_upc)
+fit3_upc_loo
+```
+
+### Model Comparison (Save for when adding variables)
+
+```{r}
+fit3_upc_loo <- loo(fit3_upc)
 # Compare log likelihoods
 loo_compare(fit1_loo, fit2_loo, fit3_loo, fit1_upc_loo)
 ```
