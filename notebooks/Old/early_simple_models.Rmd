@@ -1,0 +1,79 @@
+---
+title: "Early, Simple Models"
+output: html_notebook
+---
+
+### Model 1- Single level model w/o Priors, Generated Quantities
+
+We'll just model price as a function of UPC. 
+
+```{r}
+writeLines(readLines("models/1_single_level_no_prior_no_gen.stan"))
+```
+
+Next, we'll compile the model. This allows us to check for errors.
+
+```{r}
+m1_upc <- stanc(file = "models/1_single_level_no_prior_no_gen.stan") # Check Stan file
+m1_upc <- stan_model(stanc_ret = m1_upc) # Compile Stan code
+```
+
+When running 4 chains in parallel, the time to execute is as long as the longest chain. 
+
+```{r}
+fit1_upc <- sampling(m1_upc, #use sampling function, rather than stan()
+                warmup=1000, #recommended in Betancourt "RStan Workflow"
+                iter=2000, #TOTAL iterations- first 1000 are warmup
+                seed=1, #ensures reproducibility
+                data=data, 
+                chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m1_upc)
+```
+
+```{r}
+pairs(fit1_upc)
+```
+
+
+```{r}
+list_of_draws <- rstan::extract(fit1_upc)
+print(names(list_of_draws))
+print(fit1_upc, c("beta_0", "beta_1")) 
+```
+
+### Model 2- Single level model w/ Priors, w/o Generated Quantities
+
+We'll add some priors. 
+
+```{r}
+writeLines(readLines("models/2_single_level_priors_no_gen.stan"))
+```
+
+Next, we'll compile the model. This allows us to check for errors.
+
+```{r}
+m2_upc <- stanc(file = "models/2_single_level_priors_no_gen.stan") # Check Stan file
+m2_upc <- stan_model(stanc_ret = m2_upc) # Compile Stan code
+```
+
+67 seconds total.
+
+```{r}
+fit2_upc <- sampling(m2_upc, 
+                warmup=400, 
+                iter=4000, 
+                seed=1, 
+                data=data, 
+                chains = 1,
+                cores = getOption("mc.cores", 1L),
+                verbose = TRUE)
+rm(m2_upc)
+```
+
+```{r}
+list_of_draws <- rstan::extract(fit1_upc)
+print(names(list_of_draws))
+print(fit1_upc, c("beta_0", "beta_1")) 
+```
