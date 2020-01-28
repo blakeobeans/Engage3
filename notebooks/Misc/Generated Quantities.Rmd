@@ -1,0 +1,36 @@
+---
+title: "Generated Quantities"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Generated Quantities
+
+Due to memory limitations, we'll generate quantities separately. However, there is an error in in gqs() currently preventing generated quantities with factor variables. Thus, the best option is to run the model on a more powerful computer via the cloud. This step will be done later.
+
+```{r}
+writeLines(readLines("models/single level/gen quant/single_level_gc.stan"))
+m1_gc <- readLines("models/single level/gen quant/single_level_gc.stan")
+m1_gc <- stan_model(model_code = m1_gc) # Compile Stan code
+```
+
+```{r}
+rep <- gqs(m1_gc, data = data, draws = as.matrix(fit1))
+```
+
+### Model Fit
+
+```{r}
+fit1_loo <- loo(fit1)
+fit1_loo
+```
+
+### Model Comparison (Save for when adding variables)
+
+```{r}
+fit3_upc_loo <- loo(fit3_upc)
+# Compare log likelihoods
+loo_compare(fit1_loo, fit2_loo, fit3_loo, fit1_upc_loo)
+```
+

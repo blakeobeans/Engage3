@@ -1,0 +1,18 @@
+---
+title: "Database"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+#import online
+library(RMariaDB)
+con <- dbConnect(MariaDB(),
+                 user = 'blakeobeans',
+                 password = 'MrJ0nes123',
+                 host = 'mydbinstance4.c1uducbod6js.us-west-1.rds.amazonaws.com',
+                 dbname='blakeobeans')
+
+model_data <- dbReadTable(conn = con, name = 'engage3', value = engage3, overwrite = TRUE)
+```

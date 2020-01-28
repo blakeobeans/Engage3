@@ -1,9 +1,7 @@
 ---
-title: "Multi-level Pricing Model"
-output:
-  html_document:
-    df_print: paged
-editor_options:
+title: "Two-Level"
+output: html_notebook
+editor_options: 
   chunk_output_type: console
 ---
 
@@ -17,6 +15,7 @@ library(loo)
 library(tidyverse)
 library(here)
 setwd(here())
+here()
 ```
 
 ```{r}
@@ -24,12 +23,18 @@ rstan_options(auto_write = TRUE) #cache model
 options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
+
 We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
 
 ### The Data
 
+
 ```{r}
 model_data <- read.csv("data/model_data.csv")
+```
+
+
+```{r}
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
 ```
 
@@ -68,7 +73,7 @@ Consistent with Stan's best practices, we're going to dump the processed data in
 stan_rdump(c("N_obs", "N_stores", "N_banners", "N_regions", "N_upc",
              "store_id", "banner_id", "region_id", "upc_id",
              "banner_level_lookup", "region_level_lookup",
-             "Price"), file="data/stan_data_dump.R")
+             "Price"), file="../data/stan_data_dump.R")
 
 rm(banner_id); rm(banner_level_lookup); rm(N_banners); rm(N_obs); rm(N_regions);
 rm(N_stores); rm(N_upc); rm(Price); rm(region_id); rm(store_id); rm(upc_id)
@@ -93,53 +98,101 @@ qplot(scale(data$Price))
 Price as a function of UPC. With priors and generated quantities.
 
 ```{r}
-writeLines(readLines("models/single_level.stan"))
+writeLines(readLines("models/two level/two_level_no_gen_nc.stan"))
 ```
 
 Next, we'll compile the model. This allows us to check for errors.
 
 ```{r}
-m1 <- stanc(file = "models/single_level.stan") # Check Stan file
-m1 <- stan_model(stanc_ret = m1) # Compile Stan code
+m2 <- stanc(file = "models/two level/two_level_no_gen_nc.stan")
+m2 <- stan_model(stanc_ret = m2)
 ```
 
-About 30 minutes execution time.
-
 ```{r}
-fit1 <- sampling(m1, #use sampling function, rather than stan()
-                warmup=1000, #recommended in Betancourt "RStan Workflow"
-                iter=6000, #TOTAL iterations- first 1000 are warmup
+fit2 <- sampling(m2, #use sampling function, rather than stan()
+                warmup=1000, #
+                iter=6000, #total iterations including warmup
                 seed=1, #ensures reproducibility 
                 data=data, 
                 chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
                 cores = getOption("mc.cores", 1L),
-                verbose = TRUE)
-rm(m1)
+                verbose = FALSE,
+                refresh = 1000)
 ```
 
 ```{r}
-save.image(file="data/single_level.RData") 
+rm(m2)
+```
+
+### Posterior Summary Statistics and Convergence Diagnostics
+
+This is good summary information, but it's strange that they're bundled together. On the one hand, we want our parameter estimates, but on the other hand, we're curious about convergence. I can see why we want to know them all at once, but where you go with each of these is very difference: inference and model checking, respectively.
+
+### Sampling Diagnostics
+
+```{r}
+rstan::check_hmc_diagnostics(fit2) #does all 3 below
+```
+
+```{r}
+sampler_params <- get_sampler_params(fit2, inc_warmup = TRUE)
+summary(do.call(rbind, sampler_params), digits = 2)
+```
+
+### Effective Samples and R-hat
+
+```{r}
+ fit2_summary <- summary(fit2)$summary %>% 
+  as.data.frame() %>% 
+  mutate(variable = rownames(.)) %>% 
+  select(variable, everything()) %>% 
+  as_tibble()
+```
+
+#### Number of effective samples
+
+```{r}
+fit2_summary %>% 
+  ggplot(aes(n_eff)) + 
+  geom_histogram() + 
+  xlim(0, 250)
+```
+
+#### R-hat
+
+Clearly not enough samples! 
+
+```{r}
+fit2_summary %>% 
+  ggplot(aes(Rhat)) + 
+  geom_histogram() 
+```
+
+```{r}
+fit2_summary %>% select(variable, Rhat) %>% arrange(desc(Rhat)) 
 ```
 
 
-#### Diagnostics
+#### Summary Statistics
 
 ```{r}
-list_of_draws <- rstan::extract(fit1)
+list_of_draws <- rstan::extract(fit2)
 print(names(list_of_draws))
-print(fit1_upc, c("beta_0", "beta_1")) 
+round(summary(fit2, pars = 'sigma_e0')$summary, 2) #pars = NULL, probs=NULL
+```
+
+Converting to a matrix object to look at all samples.
+
+```{r}
+beta0_and_sigmae0 <- as.matrix(fit2, pars = c("beta_0", "sigma_e0"))
+head(beta0_and_sigmae0)
 ```
 
 ```{r}
-fit1_loo <- loo(fit1)
-fit1_loo
+plot(fit2, pars = 'sigma_e0', ci_level = 0.95)
 ```
 
-### Model Comparison (Save for when adding variables)
 
-```{r}
-fit3_upc_loo <- loo(fit3_upc)
-# Compare log likelihoods
-loo_compare(fit1_loo, fit2_loo, fit3_loo, fit1_upc_loo)
-```
+### Posterior Predtive Analysis
 
+Need generated quantities

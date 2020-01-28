@@ -1,0 +1,12 @@
+---
+title: "ShinyStan"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+#### Shinystan
+
+```{r}
+shinystan::launch_shinystan(fit1)
+```

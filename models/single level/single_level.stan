@@ -30,22 +30,28 @@ parameters {
 
 }
 
-
 model {
-  vector[N_obs] mu;
-  mu = beta_0 + beta_1[upc_id];
-  Price_norm ~ normal(mu, sigma_e0);
+  vector[N_obs] mu = beta_0 + beta_1[upc_id]; //keep mu local to model
   //priors
   sigma_e0  ~ exponential(1);
-  beta_0 ~ normal(0, 1);
-  beta_1 ~ normal(0, 1);
+  beta_0 ~ std_normal();
+  beta_1 ~ std_normal();
+  
+  Price_norm ~ normal(mu, sigma_e0);
 }
 
+
 generated quantities {
-  vector[N_obs] log_lik;
-  vector[N_obs] y_pred;
-  vector[N_obs] mu;
-  for (n in 1:N_obs) mu[n] = beta_0 + beta_1[upc_id][n]; 
-  for (n in 1:N_obs) log_lik[n] = normal_lpdf(Price_norm[n] | beta_0 + beta_1[upc_id][n] , sigma_e0);
-  for (n in 1:N_obs) y_pred[n] = normal_rng(mu[n] , sigma_e0);
+
+  vector[N_obs] log_lik; //prevenue creation of mu as gen quantity
+
+  for (n in 1:N_obs) {
+
+      real mu = beta_0 + beta_1[upc_id][n]; 
+
+      log_lik[n] = normal_lpdf(Price_norm[n] | mu, sigma_e0);
+
+  }
+
 }
+
