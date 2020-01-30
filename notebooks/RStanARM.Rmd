@@ -1,0 +1,141 @@
+---
+title: "RStanARM"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(rstan)
+library(rstanarm)
+library(loo)
+library(tidyverse)
+library(bayesplot)
+theme_set(bayesplot::theme_default())
+library(here)
+setwd(here())
+here()
+```
+
+```{r}
+rstan_options(auto_write = TRUE) #cache model
+options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
+```
+
+
+We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+
+### The Data
+
+
+```{r}
+model_data <- read.csv("data/model_data.csv")
+```
+
+
+```{r}
+colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
+str(model_data)
+model_data$store_id <- as.factor(model_data$store_id)
+model_data$UPC <- as.factor(model_data$UPC)
+length(unique(model_data$UPC))
+```
+
+```{r}
+model_data$price_norm = scale(model_data$Price)
+```
+
+```{r}
+levels(model_data$banner_id)
+```
+
+The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+
+### The Model
+
+```{r}
+m1 <- stan_glmer(formula = price_norm ~ region_id + region_id:banner_id + 
+                  banner_id + (1|banner_id:store_id) , #+ UPC
+              data = model_data, 
+              family = gaussian,
+              prior = normal(location = 0, scale = 1, autoscale = TRUE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = TRUE),
+              cores = 4,
+              chains = 1,
+              seed = 1,
+              adapt_delta = 0.95)
+```
+
+
+
+Print includes fixed effects.
+
+```{r}
+print(m1, digits = 2)
+```
+
+Summary includes random effects.
+
+```{r}
+summary(m1, 
+        #pars = c("(Intercept)"), 
+        probs = c(0.025, 0.975),
+        digits = 2)
+```
+
+See the stan code.
+
+```{r}
+rstan::get_stanmodel(m1$stanfit) 
+```
+
+Coefficients for random effects.
+
+```{r}
+coefficients(m1)
+```
+
+```{r}
+names(m1)
+```
+
+```{r}
+sims <- as.matrix(m1)
+dim(sims)
+colnames(sims)
+```
+
+```{r}
+posterior_interval(m1, prob = 0.95, pars = 'region_idNew York')
+```
+
+```{r}
+cbind(median = coef(m1), MAD_SD = se(m1))
+```
+
+```{r}
+summary(residuals(m1)) # not deviance residuals
+```
+
+```{r}
+cov2cor(vcov(m1))
+```
+
+```{r}
+launch_shinystan(m1, ppd = FALSE)
+```
+
+```{r}
+y <- as.numeric(model_data$price_norm)
+
+y_rep <- posterior_predict(m1)
+```
+
+```{r}
+loo_m1 <- waic(m1) #waic works!
+```
+

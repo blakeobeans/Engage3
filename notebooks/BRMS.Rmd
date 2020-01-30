@@ -1,0 +1,167 @@
+---
+title: "BRMS"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(rstan)
+library(brms)
+library(loo)
+library(tidyverse)
+library(bayesplot)
+theme_set(bayesplot::theme_default())
+?bayesplot_theme_set
+library(here)
+setwd(here())
+here()
+```
+
+```{r}
+rstan_options(auto_write = TRUE) #cache model
+options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
+```
+
+
+We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+
+### The Data
+
+
+```{r}
+model_data <- read.csv("data/model_data.csv")
+```
+
+
+```{r}
+colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
+str(model_data)
+model_data$store_id <- as.factor(model_data$store_id)
+model_data$UPC <- as.factor(model_data$UPC)
+length(unique(model_data$UPC))
+```
+
+```{r}
+model_data$price_norm = scale(model_data$Price)
+```
+
+```{r}
+levels(model_data$banner_id)
+```
+
+The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+
+### Priors
+
+```{r}
+priors <- get_prior(price_norm ~ region_id + region_id:banner_id + 
+                  banner_id + (1|banner_id:store_id) , #+ UPC
+              data = model_data)
+priors$class
+```
+
+```{r}
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("cauchy(0,5)", class = "sd"),
+            set_prior("cauchy(0,5)", class = "sigma"))
+```
+
+
+### The Model
+
+```{r}
+m1 <- brm(formula = price_norm ~ region_id + region_id:banner_id +  banner_id + (1|banner_id:store_id) -1 , #+ UPC
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              seed = 1,
+              control = list(adapt_delta = .9))
+```
+
+### See the stan code.
+
+```{r}
+stancode(m1)
+```
+
+Without compiling...
+
+```{r}
+make_stancode(price_norm ~ region_id + region_id:banner_id + 
+              banner_id + (1|banner_id:store_id) , #+ UPC
+                  data = model_data, 
+                  family = gaussian(),
+                  prior = NULL,
+                  cores = 4,
+                  chains = 1,
+                  seed = 1)
+```
+
+### Analysis
+
+```{r}
+summary(m1, 
+        probs = c(0.025, 0.975),
+        digits = 2)
+```
+
+```{r}
+prior_summary(m1)
+```
+
+```{r}
+plot(m1, N = 2, ask = FALSE)
+```
+
+```{r}
+plot(conditional_effects(m1), points = TRUE) 
+```
+
+```{r}
+pp_check(m1)
+```
+
+```{r}
+loo(m1)
+```
+
+
+```{r}
+names(m1)
+```
+
+```{r}
+sims <- as.matrix(m1)
+dim(sims)
+colnames(sims)
+```
+
+```{r}
+posterior_interval(sims, prob = 0.95, pars = 'region_idNewYork')
+```
+
+
+```{r}
+summary(residuals(m1)) # not deviance residuals
+```
+
+```{r}
+cov2cor(vcov(m1))
+```
+
+```{r}
+launch_shinystan(m1)
+```
+
+```{r}
+y <- as.numeric(model_data$price_norm)
+y_rep <- posterior_predict(m1)
+```
+

@@ -12,11 +12,17 @@
    int<lower=0> N_stores;
    // Number of level-3 clusters
    int<lower=0> N_banners;
+   // Number of level-4 clusters
+   int<lower=0> N_regions;
+   // Interaction for banners & regions
    // Cluster IDs (for all levels)
    int<lower=1> store_id[N_obs];
    int<lower=1> banner_id[N_obs];
+   int<lower=1> region_id[N_obs];
    // Level 3 look up vector for level 2
    int<lower=1> banner_level_lookup[N_stores];
+   // Level 4 look up vector for level 3
+   int<lower=1> region_level_lookup[N_stores];
  }
  
   transformed data{
@@ -37,40 +43,46 @@ parameters {
   // Note that the subscripts changed between the two_level and 3 level model, not _j represents the 3rd level not the 2nd
   
   // Level-2 random effect
-  vector[N_stores] u_0jk;
-  real<lower=0> sigma_u0jk;
+  vector[N_stores] u_0jki;
+  real<lower=0> sigma_u0jki;
 
   // Level-3 random effect
-  vector[N_banners] u_0k;
-  real<lower=0> sigma_u0k;
+  vector[N_banners] u_0jk;
+  real<lower=0> sigma_u0jk;
+  
+  // Level-4 random effect
+  vector[N_regions] u_0j;
+  real<lower=0> sigma_u0j;
 }
 
 transformed parameters  {
 
   // Varying intercepts
-  vector[N_stores] beta_0jk;
-  vector[N_banners] beta_0k;
-//order of levels matter... why???
+  vector[N_stores] beta_0jki;
+  vector[N_banners] beta_0jk;
+  vector[N_regions] beta_0j;
 
-  // Level-2- start from the population and work your way down!
-  beta_0k = beta_0 + u_0k * sigma_u0k; //population -> banners
+  // Level-4 //regions -> population
+  beta_0j = beta_0 + u_0j * sigma_u0j;
 
-  // Level-3 //banners -> stores
-  beta_0jk = beta_0k[banner_level_lookup] + u_0jk * sigma_u0jk;
+  // Level-3- banners to regions
+  beta_0jk = beta_0j[region_id] + u_0jk * sigma_u0jk; //population -> banners
 
-  
-
+  //Level 2- start from the bottom and work your way up... stores to banners
+  beta_0jki = beta_0jk[banner_id] + u_0jki * sigma_u0jki;
 }
 
 model {
-  vector[N_obs] mu = beta_0jk[store_id] + beta_1[upc_id];
+  vector[N_obs] mu = beta_0jki[store_id] + beta_1[upc_id];
   // Prior part of Bayesian inference
-  sigma_e0  ~ exponential(1);
   beta_0 ~ std_normal();
   beta_1 ~ std_normal();
   // Random effects distribution
-  u_0k  ~ normal(0, 1);
-  u_0jk ~ normal(0, 1);
+  u_0j  ~ normal(0,1);
+  u_0jk ~ normal(0,1);
+  u_0jki ~ normal(0,1);
+  //priors on variance
+  sigma_e0  ~ exponential(1);
 
   // Likelihood part of Bayesian inference
    Price_norm ~ normal(mu, sigma_e0);

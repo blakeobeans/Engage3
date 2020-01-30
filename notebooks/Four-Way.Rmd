@@ -1,0 +1,205 @@
+---
+title: "Four-Level Notebook"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(rstan)
+library(loo)
+library(tidyverse)
+library(here)
+setwd(here())
+here()
+```
+
+```{r}
+rstan_options(auto_write = TRUE) #cache model
+options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
+```
+
+
+We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+
+### The Data
+
+
+```{r}
+model_data <- read.csv("data/model_data.csv")
+```
+
+
+```{r}
+colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
+```
+
+
+The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+
+```{r coding the data}
+#level 1 n
+N_obs = nrow(model_data)
+#level 2 n
+N_stores = length(unique(model_data$store_id))
+#level 3 n
+N_banners = length(unique(model_data$banner_id))
+#level 4 n
+N_regions = length(unique(model_data$region_id))
+#number of items
+N_upc = length(unique(model_data$UPC))
+
+#cluster ids
+store_id = as.numeric(as.factor(model_data$store_id))
+banner_id = as.numeric(as.factor(model_data$banner_id))
+region_id = as.numeric(as.factor(model_data$region_id))
+upc_id = as.numeric(as.factor(model_data$UPC))
+
+#interaction 
+region_banner_id = region_id * banner_id #is this right?
+
+## Create a vector of school IDs where j-th element gives school ID for class ID j
+#upper_level_lookup <- unique(d[c("lower_id", "upper_id")])[,"upper_id"]
+banner_level_lookup <- unique(model_data[c("store_id", "banner_id")])[,"banner_id"]
+region_level_lookup <- unique(model_data[c("banner_id", "region_id")])[,"region_id"]
+
+length(region_level_lookup)
+length(banner_level_lookup)
+
+#continuous outcome
+Price = as.numeric(model_data$Price)
+```
+
+Consistent with Stan's best practices, we're going to dump the processed data into a separate file and clear our environment. Then, we'll read it back in.
+
+```{r stan data dump}
+stan_rdump(c("N_obs", "N_stores", "N_banners", "N_regions", "N_upc",
+             "store_id", "banner_id", "region_id", "upc_id",
+             "banner_level_lookup", "region_level_lookup",
+             "Price", "region_banner_id"), file="data/stan_data_dump.R")
+
+rm(banner_id); rm(banner_level_lookup); rm(N_banners); rm(N_obs); rm(N_regions);
+rm(N_stores); rm(N_upc); rm(Price); rm(region_id); rm(store_id); rm(upc_id)
+rm(model_data); rm(region_level_lookup)
+
+data <- read_rdump("data/stan_data_dump.R") #import data
+```
+
+### Preview
+
+We can see that the price, which is always positive, should be transformed. This makes sampling much faster. However, the log is highly skewed. A standization scaling works better. The scaling will be performed in Stan.
+
+```{r}
+qplot(data$Price)
+qplot(log(data$Price))
+qplot(scale(data$Price))
+```
+
+
+### Four Level Model
+
+Price as a function of UPC. With priors and generated quantities.
+
+```{r}
+writeLines(readLines("models/four way/four_way.stan"))
+```
+
+Next, we'll compile the model. This allows us to check for errors.
+
+```{r}
+m4 <- stanc(file = "models/four way/four_way.stan")
+m4 <- stan_model(stanc_ret = m4)
+```
+
+```{r}
+fit4 <- sampling(m4, #use sampling function, rather than stan()
+                warmup=500, #
+                iter=2000, #total iterations including warmup
+                seed=1, #ensures reproducibility 
+                data=data, 
+                chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
+                cores = getOption("mc.cores", 1L),
+                verbose = FALSE,
+                refresh = 1000)
+```
+
+
+```{r}
+rm(m4)
+```
+
+### Posterior Summary Statistics and Convergence Diagnostics
+
+This is good summary information, but it's strange that they're bundled together. On the one hand, we want our parameter estimates, but on the other hand, we're curious about convergence. I can see why we want to know them all at once, but where you go with each of these is very difference: inference and model checking, respectively.
+
+### Sampling Diagnostics
+
+```{r}
+rstan::check_hmc_diagnostics(fit3) #does all 3 below
+```
+
+```{r}
+sampler_params <- get_sampler_params(fit3, inc_warmup = TRUE)
+summary(do.call(rbind, sampler_params), digits = 2)
+```
+
+### Effective Samples and R-hat
+
+```{r}
+ fit3_summary <- summary(fit3)$summary %>% 
+  as.data.frame() %>% 
+  mutate(variable = rownames(.)) %>% 
+  select(variable, everything()) %>% 
+  as_tibble()
+```
+
+#### Number of effective samples
+
+```{r}
+fit3_summary %>% 
+  ggplot(aes(n_eff)) + 
+  geom_histogram() + 
+  xlim(0, 250)
+```
+
+#### R-hat
+
+Clearly not enough samples! 
+
+```{r}
+fit3_summary %>% 
+  ggplot(aes(Rhat)) + 
+  geom_histogram() 
+```
+
+```{r}
+fit3_summary %>% select(variable, Rhat) %>% arrange(desc(Rhat)) 
+```
+
+
+#### Summary Statistics
+
+```{r}
+list_of_draws <- rstan::extract(fit3)
+print(names(list_of_draws))
+round(summary(fit3, pars = 'beta_0jk')$summary, 2) #pars = NULL, probs=NULL
+```
+
+Converting to a matrix object to look at all samples.
+
+```{r}
+beta0_and_sigmae0 <- as.matrix(fit3, pars = c("beta_0", "sigma_e0"))
+head(beta0_and_sigmae0)
+```
+
+```{r}
+plot(fit3, pars = 'sigma_e0', ci_level = 0.95)
+```
+
+
+### Posterior Predtive Analysis
+
+Need generated quantities
