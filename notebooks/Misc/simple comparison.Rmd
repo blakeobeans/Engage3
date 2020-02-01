@@ -1,0 +1,25 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+m1 <- brm(formula = price_norm ~ region_id - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = NULL,
+              cores = 4,
+              chains = 4,
+          iter = 5000,
+          warmup = 1000,
+              seed = 1)
+```
+
+```{r}
+sims <- as.matrix(m1)
+apply(sims, 2, median)
+```
+

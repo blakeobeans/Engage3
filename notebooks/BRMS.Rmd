@@ -16,10 +16,8 @@ library(loo)
 library(tidyverse)
 library(bayesplot)
 theme_set(bayesplot::theme_default())
-?bayesplot_theme_set
 library(here)
 setwd(here())
-here()
 ```
 
 ```{r}
@@ -28,81 +26,85 @@ options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
 
-We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
-
 ### The Data
 
+The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
-```
-
-
-```{r}
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
-str(model_data)
 model_data$store_id <- as.factor(model_data$store_id)
 model_data$UPC <- as.factor(model_data$UPC)
-length(unique(model_data$UPC))
-```
-
-```{r}
 model_data$price_norm = scale(model_data$Price)
 ```
 
-```{r}
-levels(model_data$banner_id)
-```
-
-The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
 
 ### Priors
 
 ```{r}
-priors <- get_prior(price_norm ~ region_id + region_id:banner_id + 
-                  banner_id + (1|banner_id:store_id) , #+ UPC
-              data = model_data)
-priors$class
+priors <- get_prior(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,              data = model_data)
+unique(priors$class)
 ```
+
 
 ```{r}
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("cauchy(0,5)", class = "sd"),
-            set_prior("cauchy(0,5)", class = "sigma"))
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
 ```
+
 
 
 ### The Model
 
 ```{r}
-m1 <- brm(formula = price_norm ~ region_id + region_id:banner_id +  banner_id + (1|banner_id:store_id) -1 , #+ UPC
+m1 <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,
               data = model_data, 
               family = gaussian(),
               prior = prior1,
               cores = 4,
-              chains = 1,
-              seed = 1,
-              control = list(adapt_delta = .9))
+              chains = 4,
+          iter = 5000,
+          warmup = 1000,
+              seed = 1)
 ```
 
-### See the stan code.
+Seems to work, now to get ready to upload to AWS.
+
 
 ```{r}
-stancode(m1)
+#Data
+stan_data <- make_standata(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC, 
+              data = model_data)
+save(stan_data,  file = "data/brms_data.rda")
 ```
 
-Without compiling...
-
 ```{r}
-make_stancode(price_norm ~ region_id + region_id:banner_id + 
-              banner_id + (1|banner_id:store_id) , #+ UPC
-                  data = model_data, 
+#stan script
+make_stancode(price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC, 
+                  data = model_data, #note- NOT stan_data
                   family = gaussian(),
-                  prior = NULL,
-                  cores = 4,
-                  chains = 1,
-                  seed = 1)
+                  prior = prior1,
+                  save_model = "models/bmrs_model.stan")
 ```
+
+
+```{r}
+m1 <- stanc(file = "models/bmrs_model.stan")
+m1 <- stan_model(stanc_ret = m1)
+fit1 <- sampling(m1, #use sampling function, rather than stan()
+                warmup=1000, #
+                iter=6000, #total iterations including warmup
+                seed=1, #ensures reproducibility 
+                data=stan_data, 
+                chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
+                cores = getOption("mc.cores", 1L),
+                verbose = FALSE,
+                refresh = 1000)
+```
+
+
+
 
 ### Analysis
 
@@ -145,6 +147,7 @@ colnames(sims)
 
 ```{r}
 posterior_interval(sims, prob = 0.95, pars = 'region_idNewYork')
+apply(sims, 2, median)
 ```
 
 

@@ -1,0 +1,29 @@
+---
+title: "Misc"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Exploration
+
+
+```{r}
+model_data %>% group_by(region_id, banner_id) %>% 
+  summarise(n = sum(length(unique(store_id))))
+```
+
+One of each store AT MOST.
+
+```{r}
+model_data %>% group_by(region_id, banner_id) %>% 
+  summarise(n = sum(length(unique(UPC))))
+```
+
+```{r}
+model_data_spread <- model_data %>% select(-Price)  
+model_data_spread <- model_data_spread %>% spread(key = UPC, value = price_norm)
+temp <- colSums(is.na(model_data_spread))
+temp = 17-temp
+hist(temp)
+```
