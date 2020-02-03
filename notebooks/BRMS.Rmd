@@ -15,47 +15,110 @@ library(brms)
 library(loo)
 library(tidyverse)
 library(bayesplot)
-theme_set(bayesplot::theme_default())
 library(here)
 setwd(here())
 ```
+
+As always, prep RStan to run on multiple cores.
 
 ```{r}
 rstan_options(auto_write = TRUE) #cache model
 options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
+I recently had the opportunity to interview with Engage3. Engage3 is a company that does... I have some experience in this field, having written my undergrade thesis on collusion in agricultural products using super-market data. They sent me a dataset with some questions that they wanted me to answer using statistical modeling. That's the subject of this article. 
 
 ### The Data
 
-The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+Engage3 sends auditors into stores to gather prices on various items. So the dataset contains prices for items (with the UPC provided). For each item, along with the UPC, we have data on the store_id, the supermarket ("banner") and the region. 
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
 model_data$store_id <- as.factor(model_data$store_id)
 model_data$UPC <- as.factor(model_data$UPC)
+sample_n(model_data, 5)
+```
+
+There are four different regions: Kansas, NY, NorCal and Texas. There are 5 different supermarkets ("banner_id"): Whole Foods, Safeway, Walmart, Wegans and Trade Joes. There are 17 different stores and 1000 different UPCs.
+
+### The Questions
+
+There were two questions on the application, first, do different regions charge more than others, and if so, by how much? Second, do different super-market brands charge more than others, and if so, by how much?
+
+### Exploratory Analysis
+
+Even the optimal Box-Cox logrithmic transformation of the price variable (the dependent variable) gives a pretty skewed distribution, so we'll scale the data in order to sample efficiency. Thus, the beta coefficients will have a "standard deviation" interpretation, and we'll use the gaussian family in the regression model.
+
+```{r}
+qplot(scale(model_data$Price))
 model_data$price_norm = scale(model_data$Price)
 ```
 
+How many of each stores are within each super-market within each region? Dplyr to the rescure.
 
-### Priors
+```{r}
+model_data %>% group_by(region_id, banner_id) %>% 
+  summarise(n = sum(length(unique(store_id))))
+```
+
+There are only 4/5 super-markets in each region except for Texas. The UPC data comes from one super-market in each region.
+
+There is an old joke in Freedmans "Hidden Order" about two supermarkets advertising that they have the lowest prices. This is only true as long as they have the lowest prices on different goods. So, in comparing super-markets, we need to compare them on the basis of the same items. There are 1000 unique super-market items in the dataset.  
+
+```{r}
+model_data_spread <- model_data %>% select(-Price) %>% spread(key = UPC, value = price_norm)
+d <- nrow(model_data_spread) - colSums(is.na(model_data_spread))
+hist(d)
+```
+
+Typically, each item appears in 10 out of 17 stores on average.
+
+### The Model
+
+In order to answer the questions, I would lean more towards a regression framework than a machine learning or deep learning framework. This is because I'm trying to estimate model parameters, not predict outcomes. 
+
+This dataset allows one to estimate pricing across regions and supermarkets. The problem seems straightfoward enough- regress the prices on the UPC, store_id, super-market and region.
+
+However, the hierarchical *structure* of the dataset suggests that  a multi-level model (MLM) would more accurately estimate the parameters of interest. There are three levels to the data: stores nested within super-markets nested within regions, with the items are spread across those regions. 
+
+Typically, non-MLM models would overestimate the differences between super-markets and regions. In order to test test this theory to the data, we'll compare a standard model to a MLM model.
+
+The model will be executed in a Bayesian framework using Stan. Why? Because priors help control for over-fitting. Rather than coding in Stan directly, the model will be executed using the BRMS package, which uses the familiar LME4 package syntax for easily coding multi-level models while also providing the benefit of automatically translating the code into Stan. 
+
+#### Parameter Priors, Nesting and Fixed vs. Random Effects
+
+Priors on the regression coefficients are all standard normal. These are regularizing priors.
+
+Recall that the dependent variable is scaled with an approximate range between -2 and 2. Furthermore, all predictors are factors. Technically, the model is a mixed effects ANOVA, but we're interested in interpreting regression coefficients. 
+
+Thus, given the range of scaled prices, the a prioir effect of a certain level of any factor is unlikely to be more than a single standard deviation, and this is before statistically adjusting for the effect of the item itself, which will likely explain most of the variation in price (the relative cost of milk to a potato is much more likely to be explained by the production costs of the item itself than the region or super-market that the item is sold in.)
+
+Exponential priors for for the model variance are used.
 
 ```{r}
 priors <- get_prior(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,              data = model_data)
-unique(priors$class)
-```
 
-
-```{r}
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"),
             set_prior("exponential(1)", class = "sd"))
 ```
 
+The nesting structure is pretty straightforward. At the store level, we have the UPC and the store_id. The next level is the super-market, which is nested within a given region by being modeled as an interaction effect. In the author's opinion it is a negelected point to mention that the nesting component of a multilevel is separate from the partial pooling component, with the former being represented in the model as an interaction and the latter being represented as each level having a shared prior distribution (in a Bayesian framework). The nesting structure allows us to ask, for example, does a Safeway and Norcal charge more than a Safeway in Kansas?
 
+The LME4 syntax emphasizes fixed vs. random effects, whose definitions are confusing at best and mis-leading at worst. Allow me to provide my own interpretation for assigning variables to one of each effect category.
 
-### The Model
+When it comes to deciding whether or not a variable qualifies as a fixed or random effect, there are many sources to help guide one's thinking, but the heuristic that I have found most useful is to ask: does it make sense to have an 'average level' for the parameter? This gets back to the notion of "partial pooling" and the Bayesian perspective of having shared hyper-parameters for the prior distribution. Let's apply this heuristic to each factor.
+
+For region_id, it makes sense to have an "average level." If you were to average all the regions in the US, and their average is something like the US itself. 
+
+For banner_id, does it make sense to have an "average super-market?" Again, yes it does. Although there is no "average supermarket" per se, Safeway feels something like an average super-market, with there being higher and lower-end substitutes. 
+
+For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. 
+
+For UPC- does it make sense to have an average item? Absolutely not. You can't average milk and a potato. (Potato milkshake, anyone?)
+
+Thus, the model is written below:
 
 ```{r}
 m1 <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,
@@ -64,18 +127,20 @@ m1 <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,
               prior = prior1,
               cores = 4,
               chains = 4,
-          iter = 5000,
-          warmup = 1000,
-              seed = 1)
+              iter = 1000,
+              warmup = 200,
+              seed = 1, 
+              refresh = 1)
 ```
 
-Seems to work, now to get ready to upload to AWS.
+Given over 10,000 observations and 1000 unique UPC's, this model will take a while to compile on a local machine. Thus, an R Studio AMI was created on AWS, with the instance running on 16 cores and many gigs of ram. While the AMI contained RStan 2.18 (current version as of 2/1/20 is 2.19.2), it did not contain the RStanARM or BRMS packages (and those packages could not be installed due to technical complications). 
 
+Fortunately, BRMS contains functions to translate the high-level LME4 syntax to a Stan script, as well as translating the data.frame object to a list object. 
 
 ```{r}
-#Data
-stan_data <- make_standata(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC, 
-              data = model_data)
+#Data object
+stan_data <- make_standata(price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC, 
+                          data = model_data)
 save(stan_data,  file = "data/brms_data.rda")
 ```
 
@@ -88,25 +153,27 @@ make_stancode(price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,
                   save_model = "models/bmrs_model.stan")
 ```
 
+Both the Stan script and list object were uploaded to the AWS Instance. From there, using RStan, the Stan script was compiled to C++ and the sampling function was used to execute the model. Despite the computational power provided by AWS, the model still took about 12 hours to sample using 4 chains and 1000 iterations each.
 
 ```{r}
 m1 <- stanc(file = "models/bmrs_model.stan")
 m1 <- stan_model(stanc_ret = m1)
 fit1 <- sampling(m1, #use sampling function, rather than stan()
-                warmup=1000, #
-                iter=6000, #total iterations including warmup
-                seed=1, #ensures reproducibility 
-                data=stan_data, 
-                chains = 4, #each chain has different initial condition which helps to find pathological neighborhood of posterior
-                cores = getOption("mc.cores", 1L),
-                verbose = FALSE,
-                refresh = 1000)
+                 warmup=250, #
+                 iter=1000, #total iterations including warmup
+                 seed=1, #ensures reproducibility 
+                 data=stan_data, 
+                 chains = 4, 
+                 cores = getOption("mc.cores", 1L),
+                 verbose = FALSE,
+                 refresh = 1)
 ```
 
-
-
+Once the model was executed, global environment was saved as an RData file and this file was downloaded to my local machine using Filezilla. For more details on how this is done, see my article here.
 
 ### Analysis
+
+Compare prior to posterior.
 
 ```{r}
 summary(m1, 
