@@ -71,7 +71,7 @@ There is an old joke in Freedmans "Hidden Order" about two supermarkets advertis
 ```{r}
 model_data_spread <- model_data %>% select(-Price) %>% spread(key = UPC, value = price_norm)
 d <- nrow(model_data_spread) - colSums(is.na(model_data_spread))
-hist(d)
+quickplot(d) + ggtitle("Frequency Distribution- Number of Items per Store")
 ```
 
 Typically, each item appears in 10 out of 17 stores on average.
@@ -153,6 +153,27 @@ summary(brms_model)
 ```
 
 The family-specific variation of sigma is equal to 0.09, which is small, showing that most of the variation is explained.
+
+We can calculate the intraclass correlation coefficient...
+
+```{r}
+(.04)^2/((.04)^2 + (.11^2)+(.09)^2) #regions
+(.11)^2/((.04)^2 + (.11^2)+(.09)^2) #supermarkets
+
+```
+
+```{r}
+hyp <- "sd_region_id__Intercept^2 / (sd_region_id__Intercept^2 + sigma^2 + sd_region_id:banner_id__Intercept^2) = 0"
+hypothesis(brms_model, hyp, class = NULL)
+```
+
+For multiple levels, the ICC is calculated using group effects and family-level effects from different models. See Schoot part 1.
+
+```{r}
+summary(brms_model)$fixed
+summary(brms_model)$random
+```
+
 
 ### Variance in Regions
 
@@ -263,15 +284,13 @@ launch_shinystan(brms_model)
 priors <- get_prior(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
               data = model_data)
 
-unique(priors$class)
-
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"))
 ```
 
 
 ```{r}
-brms_model2 <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
+fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
               data = model_data, 
               family = gaussian(),
               prior = prior1,
@@ -284,10 +303,91 @@ brms_model2 <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC
 ```
 
 ```{r}
-loo(brms_model, brms_model2)
+priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
 ```
 
-MLM fits better by an SE of 11.9. Means what?
+```{r}
+random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r}
+priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+```
+
+```{r}
+random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+
+```{r}
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+```
+
+```{r}
+random_nest_both <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + (1|banner_id) + store_id + UPC,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r}
+parnames(random_no_nest)
+#note that specific levels are not to be included
+pars = c("r_region_id",
+         "r_banner_id",
+         "sd_region_id__Intercept",
+         "sigma")
+options(max.print=10000)
+mcmc_plot(random_no_nest, pars = pars)
+```
+
+
+```{r}
+loo(brms_model, fixed_effects, random_no_nest, random_nest_both)
+```
+
+MLM fits better by an SE of 11.9. Which means what?
+
+```{r}
+save.image(file = "data/brms3.RData")
+```
+
 
 ### Prediction
 
