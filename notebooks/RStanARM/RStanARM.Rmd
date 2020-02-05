@@ -130,106 +130,154 @@ m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
               refresh = 1)
 ```
 
-```{r}
-save.image("data/rstanarm.RData")
-```
+
+## Diagnostics
 
 ### ShinyStan
 
 The first, and easiest, way to perform diagnostics...
 
 ```{r}
-launch_shinystan(m1)
-```
-
-```{r}
-sso <- as.shinystan(m1)
-```
-
-```{r}
-deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans')
+launch_shinystan(m1) #launch it
+sso <- as.shinystan(m1) #convert to shiny object
+deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans') #save to shinyapps.io
 ```
 
 ### MCMC Diagnostics
 
-Two kinds: NUTS diagnostics and general MCMC.
+```{r, Betancourt's overview}
+source('scripts/stan_utility_rstanarm.R')
+check_div(m1)
+check_rhat(m1)
+check_n_eff(m1) 
+check_energy(m1)
+check_treedepth(m1)
+```
 
 #### NUTS diagnostics
 
-```{r}
-lp_ncp <- log_posterior(m1)
-np_ncp <- nuts_params(m1)
+```{r diagnostics setup}
+l_post <- log_posterior(m1)
+nuts_p <- nuts_params(m1)
+
+names(m1$coefficients) #identify parameters of interest
+pars = names(m1$coefficients[1018:1021])
 ```
 
 ##### Divergence
 
+I don't think there's a way to extract the exact parameters that have divergent samples...
+
 ```{r}
 color_scheme_set("darkgray")
-mcmc_parcoord(m1, np = np_ncp)
+mcmc_parcoord(m1, np = nuts_p, pars = pars)
 ```
 
-```{r}
+```{r mcmc_pairs}
+mcmc_pairs(m1, 
+           np = nuts_p, 
+           pars = pars,  
+           off_diag_args = list(size = 0.75))
+```
+
+```{r mcmc_scatter}
+mcmc_scatter(
+  m1,
+  pars = pars[1:2],
+  #transform = list(tau = "log"), # can abbrev. 'transformations'
+  np = nuts_p,
+  size = 1
+)
+```
+
+```{r mcmc_trace}
+color_scheme_set("mix-brightblue-gray")
+mcmc_trace(m1, pars = pars[1], np = nuts_p) +
+  xlab("Post-warmup iteration")
+```
+
+```{r mcmc_nuts_divergence}
 color_scheme_set("red")
-mcmc_nuts_divergence(np_ncp, lp_ncp)
+mcmc_nuts_divergence(nuts_p, l_post, chain = 1)
 ```
-
 
 ##### Energy
 
-```{r}
+The two histograms should look the same. If not, you probably need to re-paramaterize.
+
+```{r mcmc_nuts_energy}
 color_scheme_set("red")
 mcmc_nuts_energy(np_ncp)
 ```
 
 #### General MCMC Diagnostics
 
-First, pick your parameters...
+You can use the summary table as a basis to create other plots and tables.
 
-```{r}
-options(max.print=100)
-posterior <- as.array(m1)
-names(m1$coefficients)
-pars = names(m1$coefficients[1018:1021])
+```{r create summary tibble}
+ m1_summary <- summary(m1) %>% 
+  as.data.frame() %>% 
+  mutate(variable = rownames(.)) %>% 
+  select(variable, everything()) %>% 
+  as_tibble()
 ```
-
 
 ##### R-hat
 
-```{r}
+```{r mcmc_rhat}
 color_scheme_set("brightblue") # see help("color_scheme_set")
-rhats <- rhat(m1, pars = pars)
-mcmc_rhat(rhats) #+ yaxis_text(hjust = 1)
-#r-hat for important parameters only?
+rhats <- rhat(m1, pars = pars) #works as a CDF too
+mcmc_rhat(rhats) + yaxis_text(hjust = 1)
+```
+
+```{r rhat histogram}
+m1_summary %>% 
+  ggplot(aes(Rhat)) + 
+  geom_histogram() 
 ```
 
 ##### Effective Sample Size
 
-Most more than .1.
+The effective sample size is an estimate of the number of independent draws from the posterior distribution of the estimand of interest. The more the better, but you want most more than .1. Good to check with the autocorrelation plot (next).
 
-```{r}
+```{r mcmc_neff}
 ratios_cp <- neff_ratio(m1, pars = pars)
 #print(ratios_cp)
 mcmc_neff(ratios_cp, size = 2)
 ```
 
+```{r neff histogram}
+iterations = m1[["stanfit"]]@sim[["iter"]]
+m1_summary %>% 
+  ggplot(aes(n_eff/iterations)) + 
+  geom_histogram() 
+```
+
 ##### Autocorrelation
 
-NUTS is much better than Gibbs.
+NUTS is much better than Gibbs at reducing autocorrelation.
 
-```{r}
+```{r mcmc_acf}
 mcmc_acf(m1, pars = pars, lags = 10)
 ```
 
+```{r mcmc_acf_bar}
+mcmc_acf_bar(m1, pars = pars, lags = 10)
+```
 
 ### Analysis
 
 ```{r}
-m1
+str(m1, max = 1)
+options(max.print = 10)
+print(m1)
+#summary(m1)
+
 ```
 
 
 ```{r}
-summary(m1)
+prior_summary(m1)
 ```
 
 The family-specific variation of sigma is equal to 0.09, which is small, showing that most of the variation is explained.
