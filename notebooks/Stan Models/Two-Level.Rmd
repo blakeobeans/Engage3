@@ -131,7 +131,8 @@ This is good summary information, but it's strange that they're bundled together
 ### Sampling Diagnostics
 
 ```{r}
-rstan::check_hmc_diagnostics(fit2) #does all 3 below
+rstan::check_hmc_diagnostics(brms_model) #does all 3 below
+
 ```
 
 ```{r}

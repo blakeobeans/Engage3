@@ -15,63 +15,573 @@ library(rstanarm)
 library(loo)
 library(tidyverse)
 library(bayesplot)
-theme_set(bayesplot::theme_default())
+library(shinystan)
 library(here)
 setwd(here())
-here()
 ```
+
+As always, prep RStan to run on multiple cores.
 
 ```{r}
 rstan_options(auto_write = TRUE) #cache model
 options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
-
-We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+I recently had the opportunity to interview with Engage3. Engage3 is a company that does... I have some experience in this field, having written my undergrade thesis on collusion in agricultural products using super-market data. They sent me a dataset with some questions that they wanted me to answer using statistical modeling. That's the subject of this article. 
 
 ### The Data
 
+Engage3 sends auditors into stores to gather prices on various items. So the dataset contains prices for items (with the UPC provided). For each item, along with the UPC, we have data on the store_id, the supermarket ("banner") and the region. 
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
-```
-
-
-```{r}
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
-str(model_data)
 model_data$store_id <- as.factor(model_data$store_id)
 model_data$UPC <- as.factor(model_data$UPC)
-length(unique(model_data$UPC))
+sample_n(model_data, 5)
 ```
 
+There are four different regions: Kansas, NY, NorCal and Texas. There are 5 different supermarkets ("banner_id"): Whole Foods, Safeway, Walmart, Wegans and Trade Joes. There are 17 different stores and 1000 different UPCs.
+
+### The Questions
+
+There were two questions on the application, first, do different regions charge more than others, and if so, by how much? Second, do different super-market brands charge more than others, and if so, by how much?
+
+### Exploratory Analysis
+
+Even the optimal Box-Cox logrithmic transformation of the price variable (the dependent variable) gives a pretty skewed distribution, so we'll scale the data in order to sample efficiency. Thus, the beta coefficients will have a "standard deviation" interpretation, and we'll use the gaussian family in the regression model.
+
 ```{r}
+qplot(scale(model_data$Price))
 model_data$price_norm = scale(model_data$Price)
 ```
 
+How many of each stores are within each super-market within each region? Dplyr to the rescure.
+
 ```{r}
-levels(model_data$banner_id)
+model_data %>% group_by(region_id, banner_id) %>% 
+  summarise(n = sum(length(unique(store_id))))
 ```
 
-The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+There are only 4/5 super-markets in each region except for Texas. The UPC data comes from one super-market in each region.
+
+There is an old joke in Freedmans "Hidden Order" about two supermarkets advertising that they have the lowest prices. This is only true as long as they have the lowest prices on different goods. So, in comparing super-markets, we need to compare them on the basis of the same items. There are 1000 unique super-market items in the dataset.  
+
+```{r}
+model_data_spread <- model_data %>% select(-Price) %>% spread(key = UPC, value = price_norm)
+d <- nrow(model_data_spread) - colSums(is.na(model_data_spread))
+quickplot(d) + ggtitle("Frequency Distribution- Number of Items per Store")
+```
+
+Typically, each item appears in 10 out of 17 stores on average.
 
 ### The Model
 
+In order to answer the questions, I would lean more towards a regression framework than a machine learning or deep learning framework. This is because I'm trying to estimate model parameters, not predict outcomes. 
+
+This dataset allows one to estimate pricing across regions and supermarkets. The problem seems straightfoward enough- regress the prices on the UPC, store_id, super-market and region.
+
+However, the hierarchical *structure* of the dataset suggests that  a multi-level model (MLM) would more accurately estimate the parameters of interest. There are three levels to the data: stores nested within super-markets nested within regions, with the items are spread across those regions. 
+
+Typically, non-MLM models would overestimate the differences between super-markets and regions. In order to test test this theory to the data, we'll compare a standard model to a MLM model.
+
+The model will be executed in a Bayesian framework using Stan. Why? Because priors help control for over-fitting. Rather than coding in Stan directly, the model will be executed using the BRMS package, which uses the familiar LME4 package syntax for easily coding multi-level models while also providing the benefit of automatically translating the code into Stan. 
+
+RstanARM of BRMS? BRMS creates stancode and standata objects. But RStanARM is more compatible with Shiny.
+
+#### Parameter Priors, Nesting and Fixed vs. Random Effects
+
+Priors on the regression coefficients are all standard normal. These are regularizing priors.
+
+Recall that the dependent variable is scaled with an approximate range between -2 and 2. Furthermore, all predictors are factors. Technically, the model is a mixed effects ANOVA, but we're interested in interpreting regression coefficients. 
+
+Thus, given the range of scaled prices, the a prioir effect of a certain level of any factor is unlikely to be more than a single standard deviation, and this is before statistically adjusting for the effect of the item itself, which will likely explain most of the variation in price (the relative cost of milk to a potato is much more likely to be explained by the production costs of the item itself than the region or super-market that the item is sold in.)
+
+Exponential priors for for the model variance are used.
+
+The nesting structure is pretty straightforward. At the store level, we have the UPC and the store_id. The next level is the super-market, which is nested within a given region by being modeled as an interaction effect. In the author's opinion it is a negelected point to mention that the nesting component of a multilevel is separate from the partial pooling component, with the former being represented in the model as an interaction and the latter being represented as each level having a shared prior distribution (in a Bayesian framework). The nesting structure allows us to ask, for example, does a Safeway and Norcal charge more than a Safeway in Kansas?
+
+The LME4 syntax emphasizes fixed vs. random effects, whose definitions are confusing at best and mis-leading at worst. Allow me to provide my own interpretation for assigning variables to one of each effect category.
+
+When it comes to deciding whether or not a variable qualifies as a fixed or random effect, there are many sources to help guide one's thinking, but the heuristic that I have found most useful is to ask: does it make sense to have an 'average level' for the parameter? This gets back to the notion of "partial pooling" and the Bayesian perspective of having shared hyper-parameters for the prior distribution. Let's apply this heuristic to each factor.
+
+For region_id, it makes sense to have an "average level." If you were to average all the regions in the US, and their average is something like the US itself. 
+
+For banner_id, does it make sense to have an "average super-market?" Again, yes it does. Although there is no "average supermarket" per se, Safeway feels something like an average super-market, with there being higher and lower-end substitutes. 
+
+For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. In fact, because there is only one banner_id for each store, it doesn't make sense to condition on the store.
+
+For UPC- does it make sense to have an average item? Absolutely not. You can't average milk and a potato. (Potato milkshake, anyone?)
+
+Thus, the model is written below:
+
 ```{r}
-m1 <- stan_glmer(formula = price_norm ~ region_id + region_id:banner_id + 
-                  banner_id + (1|banner_id:store_id) , #+ UPC
+m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
               data = model_data, 
               family = gaussian,
-              prior = normal(location = 0, scale = 1, autoscale = TRUE),
-              prior_intercept = normal(location = 0, scale = 1, autoscale = TRUE),
+              prior = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
               chains = 1,
-              seed = 1,
-              adapt_delta = 0.95)
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r}
+save.image("data/rstanarm.RData")
+```
+
+### ShinyStan
+
+The first, and easiest, way to perform diagnostics...
+
+```{r}
+launch_shinystan(m1)
+```
+
+```{r}
+sso <- as.shinystan(m1)
+```
+
+```{r}
+deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans')
+```
+
+### MCMC Diagnostics
+
+Two kinds: NUTS diagnostics and general MCMC.
+
+#### NUTS diagnostics
+
+```{r}
+lp_ncp <- log_posterior(m1)
+np_ncp <- nuts_params(m1)
+```
+
+##### Divergence
+
+```{r}
+color_scheme_set("darkgray")
+mcmc_parcoord(m1, np = np_ncp)
+```
+
+```{r}
+color_scheme_set("red")
+mcmc_nuts_divergence(np_ncp, lp_ncp)
+```
+
+
+##### Energy
+
+```{r}
+color_scheme_set("red")
+mcmc_nuts_energy(np_ncp)
+```
+
+#### General MCMC Diagnostics
+
+First, pick your parameters...
+
+```{r}
+options(max.print=100)
+posterior <- as.array(m1)
+names(m1$coefficients)
+pars = names(m1$coefficients[1018:1021])
+```
+
+
+##### R-hat
+
+```{r}
+color_scheme_set("brightblue") # see help("color_scheme_set")
+rhats <- rhat(m1, pars = pars)
+mcmc_rhat(rhats) #+ yaxis_text(hjust = 1)
+#r-hat for important parameters only?
+```
+
+##### Effective Sample Size
+
+Most more than .1.
+
+```{r}
+ratios_cp <- neff_ratio(m1, pars = pars)
+#print(ratios_cp)
+mcmc_neff(ratios_cp, size = 2)
+```
+
+##### Autocorrelation
+
+NUTS is much better than Gibbs.
+
+```{r}
+mcmc_acf(m1, pars = pars, lags = 10)
+```
+
+
+### Analysis
+
+```{r}
+m1
+```
+
+
+```{r}
+summary(m1)
+```
+
+The family-specific variation of sigma is equal to 0.09, which is small, showing that most of the variation is explained.
+
+We can calculate the intraclass correlation coefficient...
+
+```{r}
+(.04)^2/((.04)^2 + (.11^2)+(.09)^2) #regions
+(.11)^2/((.04)^2 + (.11^2)+(.09)^2) #supermarkets
+
+```
+
+```{r}
+hyp <- "sd_region_id__Intercept^2 / (sd_region_id__Intercept^2 + sigma^2 + sd_region_id:banner_id__Intercept^2) = 0"
+hypothesis(brms_model, hyp, class = NULL)
+```
+
+For multiple levels, the ICC is calculated using group effects and family-level effects from different models. See Schoot part 1.
+
+```{r}
+summary(brms_model)$fixed
+summary(brms_model)$random
+```
+
+
+### Variance in Regions
+
+For the region, sd(Intercept) is 0.04, meaning that only a small amount of the variance is explained by the region. 
+
+```{r}
+sims <- as.matrix(brms_model)
+colnames(sims)[c(1020:1023)]
+sims <- sims[,c(1020:1023)]
+sims <- as.data.frame(sims)
+colnames(sims) <- c("Kansas", "New York", "NorCal", "Texas")
+regions <- gather(sims, colnames(sims), key = "region", value = "price")
+
+###
+ggplot(regions, aes(x = region, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.1, .1)
+```
+
+### Variance in Supermarkets
+
+Indeed, there is quite a bit of variance of supermarkets within regions. 
+
+More of the variation is accounted for by the brand (0.11). 
+
+```{r}
+sims <- as.matrix(brms_model)
+colnames(sims)[c(1:17, 1017:1040)]
+sims <- sims[,c(1:17, 1017:1040)]
+colnames(sims)
+###safeway
+safeway <- as.data.frame(sims)[,c(25, 33, 37)]
+colnames(safeway) <- c("Kansas", "NorCal", "Texas")
+safeway <- gather(safeway, colnames(safeway), key = "safeway", value = "price")
+#tjs
+tjs <- as.data.frame(sims)[,c(26, 29, 34, 38)]
+colnames(tjs) <- c("Kansas", "New York", "NorCal", "Texas")
+tjs <- gather(tjs, colnames(tjs), key = "tjs", value = "price")
+###walmart
+walmart <- as.data.frame(sims)[,c(27, 30, 35, 39)]
+colnames(walmart) <- c("Kansas", "New York", "NorCal", "Texas")
+walmart <- gather(walmart, colnames(walmart), key = "walmart", value = "price")
+###Wegmans
+Wegmans <- as.data.frame(sims)[,c(28, 31, 40)]
+colnames(Wegmans) <- c("Kansas", "New York", "Texas")
+Wegmans <- gather(Wegmans, colnames(Wegmans), key = "Wegmans", value = "price")
+###wholefoods
+wholefoods <- as.data.frame(sims)[,c(32, 36, 41)]
+colnames(wholefoods) <- c("New York", "Norcal", "Texas")
+wholefoods <- gather(wholefoods, colnames(wholefoods), key = "wholefoods", value = "price")
+###nested_sd
+nested_sd <- as.data.frame(sims)[,c(19)]
+nested_sd <- as.data.frame(nested_sd)
+colnames(nested_sd) <- c("price")
+nested_sd$nested_sd <- rep("nested_sd", nrow(nested_sd))
+
+
+###
+p1 <- ggplot(safeway, aes(x = safeway, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+p2 <- ggplot(tjs, aes(x = tjs, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+p3 <- ggplot(walmart, aes(x = walmart, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+p4 <- ggplot(Wegmans, aes(x = Wegmans, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+p5 <- ggplot(wholefoods, aes(x = wholefoods, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+'
+p6 <- ggplot(nested_sd, aes(x = nested_sd, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.5, .5)
+' 
+grid.arrange(p1, p2, p3, p4, p5, ncol=1)
+```
+
+### Bayesplot
+
+```{r}
+options(max.print=10000)
+posterior <- as.array(brms_model)
+dim(posterior)
+parnames(brms_model)[1020:1023]
+pars = parnames(brms_model)[1020:1023]
+```
+
+
+```{r}
+color_scheme_set("green")
+```
+
+posterior uncertainty intervals
+
+```{r}
+mcmc_intervals(posterior, pars = pars)
+```
+
+Posterior density curves
+
+```{r}
+mcmc_areas(
+  posterior,
+  pars = pars,
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.99, # 99%
+  point_est = "mean"
+)
+```
+
+Univariate marginal posterior distributions
+
+```{r}
+mcmc_hist(posterior, pars = pars)
+```
+
+```{r}
+mcmc_dens(posterior, pars = pars)
+```
+
+
+### Model Comparison
+
+
+```{r, fixed effects model}
+priors <- get_prior(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"))
+
+fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+
+```{r, random effects no nesting}
+priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+
+random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r banner random and nested}
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+
+random_nest_both <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + (1|banner_id) + store_id + UPC,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r missing store_id}
+priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+
+no_store_id<- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r}
+loo(brms_model, fixed_effects, random_no_nest, random_nest_both, no_store_id)
+```
+
+MLM fits better by an SE of 11.9. Which means what?
+
+
+### Model Checking with Loo
+
+```{r}
+loo1 <- loo(brms_model, save_psis = TRUE)
+```
+
+```{r}
+print(loo1)
+```
+Too many bad observations.
+
+```{r}
+plot(loo1)
+```
+
+### PPC
+
+Using Bayesplot
+
+```{r}
+pp_check(brms_model)
+```
+
+Using ShinyStan
+```{r}
+y <- as.numeric(model_data$price_norm)
+y_rep <- posterior_predict(m1)
+launch_shinystan(brms_model)
+```
+
+Using Loo
+
+```{r}
+yrep <- posterior_predict(brms_model)
+
+ppc_loo_pit_overlay(
+  y = as.numeric(model_data$price_norm),
+  yrep = yrep,
+  lw = weights(loo1$psis_object)
+)
+```
+
+### Prediction
+
+```{r}
+colnames(model_data)
+unique(model_data$banner_id)
+unique(model_data$region_id)
+
+newdata <- data.frame(banner_id = 'Walmart', 
+                      region_id = 'New York',
+                      UPC = NA,
+                      store_id = NA)
+predict(brms_model, newdata = newdata, re_formula = NA)
+```
+
+### Misc.
+
+
+```{r}
+prior_summary(brms_model)
+```
+
+```{r}
+summary(brms_model, pars = pars, 
+        probs = c(0.025, 0.975),
+        digits = 2)$summary
+```
+
+
+```{r}
+plot(brms_model, N = 2, ask = TRUE, pars = pars, probs = c(0.025, 0.975))
+```
+
+```{r}
+mcmc_plot(brms_model, pars = pars)
+```
+
+```{r}
+plot(conditional_effects(brms_model), 
+     points = TRUE,
+     pars = pars) 
+```
+
+```{r}
+posterior_interval(sims, prob = 0.95, pars = pars)
+apply(sims, 2, median)
+```
+
+```{r}
+summary(residuals(brms_model)) # not deviance residuals
+```
+
+```{r}
+cov2cor(vcov(brms_model))
 ```
 
 
 
+```{r}
+parnames(random_no_nest)
+#note that specific levels are not to be included
+pars = c("r_region_id",
+         "r_banner_id",
+         "sd_region_id__Intercept",
+         "sigma")
+options(max.print=10000)
+mcmc_plot(random_no_nest, pars = pars)
+```
 Print includes fixed effects.
 
 ```{r}
@@ -85,6 +595,7 @@ summary(m1,
         #pars = c("(Intercept)"), 
         probs = c(0.025, 0.975),
         digits = 2)
+
 ```
 
 See the stan code.

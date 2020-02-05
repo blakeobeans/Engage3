@@ -18,10 +18,10 @@ library(bayesplot)
 library(here)
 library(gridExtra)
 setwd(here())
+library(shinystan)
 options(max.print=100)
 ```
 
-As always, prep RStan to run on multiple cores.
 
 ```{r}
 rstan_options(auto_write = TRUE) #cache model
@@ -88,6 +88,8 @@ Typically, non-MLM models would overestimate the differences between super-marke
 
 The model will be executed in a Bayesian framework using Stan. Why? Because priors help control for over-fitting. Rather than coding in Stan directly, the model will be executed using the BRMS package, which uses the familiar LME4 package syntax for easily coding multi-level models while also providing the benefit of automatically translating the code into Stan. 
 
+RstanARM of BRMS? BRMS creates stancode and standata objects. But RStanARM is more compatible with Shiny.
+
 #### Parameter Priors, Nesting and Fixed vs. Random Effects
 
 Priors on the regression coefficients are all standard normal. These are regularizing priors.
@@ -116,14 +118,14 @@ For region_id, it makes sense to have an "average level." If you were to average
 
 For banner_id, does it make sense to have an "average super-market?" Again, yes it does. Although there is no "average supermarket" per se, Safeway feels something like an average super-market, with there being higher and lower-end substitutes. 
 
-For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. 
+For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. In fact, because there is only one banner_id for each store, it doesn't make sense to condition on the store.
 
 For UPC- does it make sense to have an average item? Absolutely not. You can't average milk and a potato. (Potato milkshake, anyone?)
 
 Thus, the model is written below:
 
 ```{r}
-brms_model <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,
+brms_model <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
               data = model_data, 
               family = gaussian(),
               prior = prior1,
@@ -133,6 +135,75 @@ brms_model <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id 
               warmup = 20,
               seed = 1, 
               refresh = 1)
+```
+
+### MCMC Diagnostics
+
+
+The first, and easiest...
+
+```{r}
+launch_shinystan(brms_model)
+```
+
+```{r}
+deploy_shinystan(my_sso, appName = "MyModel", account = "username")
+```
+
+
+Select parameters
+
+```{r}
+options(max.print=10000)
+posterior <- as.array(brms_model)
+dim(posterior)
+parnames(brms_model)[1020:1023]
+pars = parnames(brms_model)[1020:1023]
+```
+
+```{r}
+mcmc_trace(posterior, pars = pars)
+```
+
+```{r}
+lp_ncp <- log_posterior(brms_model)
+np_ncp <- nuts_params(brms_model)
+```
+
+
+```{r}
+color_scheme_set("darkgray")
+mcmc_parcoord(brms_model, np = np_ncp)
+```
+
+```{r}
+color_scheme_set("red")
+mcmc_nuts_divergence(np_ncp, lp_ncp)
+```
+
+#### R-hat
+
+```{r}
+color_scheme_set("brightblue") # see help("color_scheme_set")
+rhats <- rhat(brms_model)
+mcmc_rhat(rhats) #+ yaxis_text(hjust = 1)
+#r-hat for important parameters only?
+```
+
+#### Effective Sample Size
+
+```{r}
+ratios_cp <- neff_ratio(brms_model)
+print(ratios_cp)
+mcmc_neff(ratios_cp, size = 2)
+```
+
+#### Autocorrelation
+
+NUTS is much better than Gibbs.
+
+```{r}
+mcmc_acf(brms_model, pars = pars, lags = 10)
 ```
 
 
@@ -262,34 +333,60 @@ p6 <- ggplot(nested_sd, aes(x = nested_sd, y = price)) +
 grid.arrange(p1, p2, p3, p4, p5, ncol=1)
 ```
 
-
-### PPC
+### Bayesplot
 
 ```{r}
-pp_check(brms_model)
+options(max.print=10000)
+posterior <- as.array(brms_model)
+dim(posterior)
+parnames(brms_model)[1020:1023]
+pars = parnames(brms_model)[1020:1023]
+```
+
+
+```{r}
+color_scheme_set("green")
+```
+
+posterior uncertainty intervals
+
+```{r}
+mcmc_intervals(posterior, pars = pars)
+```
+
+Posterior density curves
+
+```{r}
+mcmc_areas(
+  posterior,
+  pars = pars,
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.99, # 99%
+  point_est = "mean"
+)
+```
+
+Univariate marginal posterior distributions
+
+```{r}
+mcmc_hist(posterior, pars = pars)
 ```
 
 ```{r}
-y <- as.numeric(model_data$price_norm)
-y_rep <- posterior_predict(m1)
+mcmc_dens(posterior, pars = pars)
 ```
 
-```{r}
-launch_shinystan(brms_model)
-```
 
 ### Model Comparison
 
-```{r}
+
+```{r, fixed effects model}
 priors <- get_prior(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
               data = model_data)
 
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"))
-```
 
-
-```{r}
 fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
               data = model_data, 
               family = gaussian(),
@@ -302,16 +399,15 @@ fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + U
               refresh = 1)
 ```
 
-```{r}
+
+```{r, random effects no nesting}
 priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
               data = model_data)
 
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"),
             set_prior("exponential(1)", class = "sd"))
-```
 
-```{r}
 random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
               data = model_data, 
               family = gaussian(),
@@ -324,36 +420,11 @@ random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + sto
               refresh = 1)
 ```
 
-```{r}
-priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
-              data = model_data)
-
+```{r banner random and nested}
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"),
             set_prior("exponential(1)", class = "sd"))
-```
 
-```{r}
-random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
-              data = model_data, 
-              family = gaussian(),
-              prior = prior1,
-              cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
-              seed = 1, 
-              refresh = 1)
-```
-
-
-```{r}
-prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("exponential(1)", class = "sigma"),
-            set_prior("exponential(1)", class = "sd"))
-```
-
-```{r}
 random_nest_both <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + (1|banner_id) + store_id + UPC,
               data = model_data, 
               family = gaussian(),
@@ -366,28 +437,74 @@ random_nest_both <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + (1|
               refresh = 1)
 ```
 
-```{r}
-parnames(random_no_nest)
-#note that specific levels are not to be included
-pars = c("r_region_id",
-         "r_banner_id",
-         "sd_region_id__Intercept",
-         "sigma")
-options(max.print=10000)
-mcmc_plot(random_no_nest, pars = pars)
+```{r missing store_id}
+priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
+              data = model_data)
+
+prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
+            set_prior("exponential(1)", class = "sigma"),
+            set_prior("exponential(1)", class = "sd"))
+
+no_store_id<- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
+              data = model_data, 
+              family = gaussian(),
+              prior = prior1,
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
 ```
 
-
 ```{r}
-loo(brms_model, fixed_effects, random_no_nest, random_nest_both)
+loo(brms_model, fixed_effects, random_no_nest, random_nest_both, no_store_id)
 ```
 
 MLM fits better by an SE of 11.9. Which means what?
 
+
+### Model Checking with Loo
+
 ```{r}
-save.image(file = "data/brms3.RData")
+loo1 <- loo(brms_model, save_psis = TRUE)
 ```
 
+```{r}
+print(loo1)
+```
+Too many bad observations.
+
+```{r}
+plot(loo1)
+```
+
+### PPC
+
+Using Bayesplot
+
+```{r}
+pp_check(brms_model)
+```
+
+Using ShinyStan
+```{r}
+y <- as.numeric(model_data$price_norm)
+y_rep <- posterior_predict(m1)
+launch_shinystan(brms_model)
+```
+
+Using Loo
+
+```{r}
+yrep <- posterior_predict(brms_model)
+
+ppc_loo_pit_overlay(
+  y = as.numeric(model_data$price_norm),
+  yrep = yrep,
+  lw = weights(loo1$psis_object)
+)
+```
 
 ### Prediction
 
@@ -444,7 +561,20 @@ summary(residuals(brms_model)) # not deviance residuals
 cov2cor(vcov(brms_model))
 ```
 
+
+
 ```{r}
-launch_shinystan(brms_model)
+as.shinystan(launch_shinystan(brms_model))
 ```
 
+
+```{r}
+parnames(random_no_nest)
+#note that specific levels are not to be included
+pars = c("r_region_id",
+         "r_banner_id",
+         "sd_region_id__Intercept",
+         "sigma")
+options(max.print=10000)
+mcmc_plot(random_no_nest, pars = pars)
+```
