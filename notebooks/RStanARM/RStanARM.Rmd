@@ -29,11 +29,15 @@ rstan_options(auto_write = TRUE) #cache model
 options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
-I recently had the opportunity to interview with Engage3. Engage3 is a company that does... I have some experience in this field, having written my undergrade thesis on collusion in agricultural products using super-market data. They sent me a dataset with some questions that they wanted me to answer using statistical modeling. That's the subject of this article. 
+I recently had the opportunity to interview with Engage3. Engage3 is a company that does...I'm not sure exactly. They do gather super-market level data, though, which is something that I have some experience in, having written my (undergrad thesis)[https://github.com/blakeobeans/website/blob/master/projects/Shurtz_Blake_Undergraduate_Thesis.pdf] on collusion in agricultural products using super-market data.  
+
+Anyway, as part of the interview process, they sent me a data analysis coding challenge. While I did the original analysis in Python as a (Jupyter Notebook)[https://github.com/blakeobeans/Engage3/blob/master/misc/Shurtz_Blake_Engage3_Report.pdf], I had been mulling over the dataset since.  
+
+The result is this vignette, which it really a full-on Bayesian workflow using the Engage3 data. For me, it was a chance to level-up my skills in Stan and related packages, as well as a chance to level-up my skills in multi-level modeling.
 
 ### The Data
 
-Engage3 sends auditors into stores to gather prices on various items. So the dataset contains prices for items (with the UPC provided). For each item, along with the UPC, we have data on the store_id, the supermarket ("banner") and the region. 
+Engage3 sends auditors into super-markets to gather prices on various items. The dataset contains prices for items (the regression response variable). For each item, along with the price, we have data on the UPC, the store_id, the supermarket (aka the "banner"- both terms will be used synonymously) and the region within the continental US. 
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
@@ -43,11 +47,19 @@ model_data$UPC <- as.factor(model_data$UPC)
 sample_n(model_data, 5)
 ```
 
-There are four different regions: Kansas, NY, NorCal and Texas. There are 5 different supermarkets ("banner_id"): Whole Foods, Safeway, Walmart, Wegans and Trade Joes. There are 17 different stores and 1000 different UPCs.
+There are four different regions: Kansas, NY, NorCal and Texas. There are 5 different supermarkets ("banner_id"): Whole Foods, Safeway, Walmart, Wegans and Trade Joes. There are 17 different stores and 1000 unique UPCs.
 
 ### The Questions
 
-There were two questions on the application, first, do different regions charge more than others, and if so, by how much? Second, do different super-market brands charge more than others, and if so, by how much?
+There were two questions on the application, first, which regions are more/less expensive and second, which super-market brands are more/less expensive? 
+
+As a burgeoning data scientist, I have a lot of tools in my toolbelt to approach such a question. My first thought is that, because I'm trying to estimate model parameters, I should use a regression framework. 
+
+The simplest model would be a linear regression of region, banner_id, store_id and UPC on prices. However, it is unlikely that this is the *best* model, given the structure of the data.
+
+The data exhibits a hierarchical *structure*: UPC items are within different super-markets, which are themselves within different regions. Given the structure of the data, a better (ie. more accurate) model would likely be a multi-level model (MLM).  
+
+Why? Typically when dealing with structure data like the Engage3 dataset, standard models overestimate the "fixed" effects of a given variable. For example, if New York had a higher premium on groceries, that premium would be higher with a standard model. Multi-level models "pull" this regional effect back towards the "grand mean" for all regions in a way that is optimal. Of course, this doesn't need to be assumed true at face value, and these models can be compared. In fact, we'll do this near the end of the vignette. 
 
 ### Exploratory Analysis
 
@@ -79,13 +91,7 @@ Typically, each item appears in 10 out of 17 stores on average.
 
 ### The Model
 
-In order to answer the questions, I would lean more towards a regression framework than a machine learning or deep learning framework. This is because I'm trying to estimate model parameters, not predict outcomes. 
 
-This dataset allows one to estimate pricing across regions and supermarkets. The problem seems straightfoward enough- regress the prices on the UPC, store_id, super-market and region.
-
-However, the hierarchical *structure* of the dataset suggests that  a multi-level model (MLM) would more accurately estimate the parameters of interest. There are three levels to the data: stores nested within super-markets nested within regions, with the items are spread across those regions. 
-
-Typically, non-MLM models would overestimate the differences between super-markets and regions. In order to test test this theory to the data, we'll compare a standard model to a MLM model.
 
 #### Why Bayes?
 
@@ -155,7 +161,9 @@ m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) + UPC - 1,
 
 ### ShinyStan
 
-The first, and easiest, way to perform diagnostics...
+The first, and easiest, way to perform diagnostics is to do so in (ShinyStan)http://mc-stan.org/shinystan/articles/deploy_shinystan.html], the Shiny app that provides common diagnostics and estimates on your executed Stan model.  
+
+On advantage of the RStanARM app over BRMS is that you can upload your Stan model to (ShinyApps.io)[link] for permanent storage. Otherwise, the app only deploys locally. One caveat is that the free version of ShinyApps only supports Apps that are up to (1 GB in size)[https://community.rstudio.com/t/unable-to-deploy-shiny-app-in-shinyapps-io-the-application-failed-to-start-exited-with-code-137/18787]. Surprisingly this Stan model exceeds that size (this is mainly due to having over 10k observations on 4 chains with 1000 iterations each). So, I've uploaded a smaller version of the model (4 chains, but with fewer iterations) available (here)[https://blakeobeans.shinyapps.io/ShinyStan_Engage3/].
 
 ```{r shinystan}
 y <- as.numeric(model_data$price_norm) #for posterior pred check
@@ -405,17 +413,33 @@ m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
               prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
               prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
+              chains = 2,
+              iter = 500,
+              warmup = 100,
               seed = 1, 
               refresh = 1)
+```
+
+Oh, and we can take this opportunity to compare the multi-level model to a standard regression. The prior in RStanARM is for how much of the variation is explained by the predictors.
+
+```{r stan_lm}
+m1_lm <- stan_lm(formula = price_norm ~ region_id + banner_id + UPC -1,
+              data = model_data, 
+              prior = R2(0.5),
+              cores = 4,
+              chains = 4,
+              iter = 250,
+              warmup = 50,
+              seed = 1, 
+              refresh = 1,
+              control = list(max_treedepth = 15,
+                             adapt_delta = 0.95))
 ```
 
 Loo uses leave-one-out validation to compare the expected log density. That sounds complicated, but it's really not that different from RMSE using density estimates on the modeled statistical distributions.
 
 ```{r loo comparison}
-loo(m1, m2)
+loo(m1, m2, m1_lm)
 ```
 
 The non-nested model fits better. 
