@@ -19,6 +19,7 @@ library(here)
 library(gridExtra)
 setwd(here())
 library(shinystan)
+library(lme4)
 options(max.print=100)
 ```
 

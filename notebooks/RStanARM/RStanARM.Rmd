@@ -17,6 +17,8 @@ library(tidyverse)
 library(bayesplot)
 library(shinystan)
 library(here)
+library(lme4)
+library(gridExtra)
 setwd(here())
 ```
 
@@ -85,11 +87,25 @@ However, the hierarchical *structure* of the dataset suggests that  a multi-leve
 
 Typically, non-MLM models would overestimate the differences between super-markets and regions. In order to test test this theory to the data, we'll compare a standard model to a MLM model.
 
-The model will be executed in a Bayesian framework using Stan. Why? Because priors help control for over-fitting. Rather than coding in Stan directly, the model will be executed using the BRMS package, which uses the familiar LME4 package syntax for easily coding multi-level models while also providing the benefit of automatically translating the code into Stan. 
+#### Why Bayes?
 
-RstanARM of BRMS? BRMS creates stancode and standata objects. But RStanARM is more compatible with Shiny.
+The model will be executed in a Bayesian framework using Stan. The justification for Bayesian methods in this case is the limited number of super-markets in each region. There is at most one super-market in each region, making estimation of the "super-market effect" difficult. Prior distributions allow us to model the initial distribution of each nested effect prior to looking at the data.  
 
-#### Parameter Priors, Nesting and Fixed vs. Random Effects
+```{r lme4 model}
+m_lme <- lme4::lmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
+              data = model_data)
+
+```
+
+
+#### Package Selection
+
+Initially, this project was coded in Stan.[link here] As the project progressed, most advisors in the Stan forums recommended either the BRMS package or RStanARM. Both packages utilie Stan for sampling but present use the familiar LME4 package syntax for coding multi-level models.
+
+BRMS and RStanARM are more similar than different. Initially, BRMS was chosen for its ability eport raw Stan code and Stan data objects. However, RStanARM allows the eport of the model's Shiny object to ShinyApps.io, which allows permanent hosting of the ShinyStan model.
+
+
+#### Prior Selection 
 
 Priors on the regression coefficients are all standard normal. These are regularizing priors.
 
@@ -98,6 +114,8 @@ Recall that the dependent variable is scaled with an approximate range between -
 Thus, given the range of scaled prices, the a prioir effect of a certain level of any factor is unlikely to be more than a single standard deviation, and this is before statistically adjusting for the effect of the item itself, which will likely explain most of the variation in price (the relative cost of milk to a potato is much more likely to be explained by the production costs of the item itself than the region or super-market that the item is sold in.)
 
 Exponential priors for for the model variance are used.
+
+#### Fixed vs. Random Effects and Nesting
 
 The nesting structure is pretty straightforward. At the store level, we have the UPC and the store_id. The next level is the super-market, which is nested within a given region by being modeled as an interaction effect. In the author's opinion it is a negelected point to mention that the nesting component of a multilevel is separate from the partial pooling component, with the former being represented in the model as an interaction and the latter being represented as each level having a shared prior distribution (in a Bayesian framework). The nesting structure allows us to ask, for example, does a Safeway and Norcal charge more than a Safeway in Kansas?
 
@@ -137,13 +155,18 @@ m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
 
 The first, and easiest, way to perform diagnostics...
 
-```{r}
+```{r shinystan}
+y <- as.numeric(model_data$price_norm) #for posterior pred check
+y_rep <- posterior_predict(m1) # for posterior pred check
 launch_shinystan(m1) #launch it
+###to save to shinyapps.io
 sso <- as.shinystan(m1) #convert to shiny object
-deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans') #save to shinyapps.io
+deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans') #deploy
 ```
 
 ### MCMC Diagnostics
+
+There are two sorts of diagnostics to perform: general MCMC diagnostics and then diagnostics that are unique to the sampling algorithm. We'll take the latter first.
 
 ```{r, Betancourt's overview}
 source('scripts/stan_utility_rstanarm.R')
@@ -265,52 +288,57 @@ mcmc_acf(m1, pars = pars, lags = 10)
 mcmc_acf_bar(m1, pars = pars, lags = 10)
 ```
 
-### Analysis
+### Model Summary
 
-```{r}
-str(m1, max = 1)
-options(max.print = 10)
+First, I'll look at the results of the model and in particular, the variances. Then we'll answer the questions around comparing regions and supermarkets.
+
+```{r stan model summary}
+#str(m1, max = 1)
+options(max.print = 10) #used to limit coefficient summaries
 print(m1)
-#summary(m1)
-
 ```
 
+There are three errors terms: sigma, the region level and the nested banner within region.
 
-```{r}
-prior_summary(m1)
+```{r mcmc_plot sigmas}
+pars= c("sigma", "Sigma[banner_id:region_id:(Intercept),(Intercept)]", "Sigma[region_id:(Intercept),(Intercept)]")
+posterior <- as.array(m1)
+mcmc_intervals(posterior, pars = pars) #from Bayesplot package
 ```
 
-The family-specific variation of sigma is equal to 0.09, which is small, showing that most of the variation is explained.
+It's worth noting how small these error terms are, with a median noise of .1 standard errors.
 
-We can calculate the intraclass correlation coefficient...
+We can calculate the intraclass correlation coefficient at the regional level:
 
-```{r}
-(.04)^2/((.04)^2 + (.11^2)+(.09)^2) #regions
-(.11)^2/((.04)^2 + (.11^2)+(.09)^2) #supermarkets
-
+```{r icc}
+.085^2/(.085^2 + .083^2 + .095^2) #regional variance
+.083^2/(.085^2 + .083^2 + .095^2) #supermarket variance
+.095^2/(.085^2 + .083^2 + .095^2) #residual variance
 ```
 
-```{r}
-hyp <- "sd_region_id__Intercept^2 / (sd_region_id__Intercept^2 + sigma^2 + sd_region_id:banner_id__Intercept^2) = 0"
-hypothesis(brms_model, hyp, class = NULL)
+We can compare these to the lmer model.
+
+```{r lmer model summary}
+print(m_lme)
 ```
 
-For multiple levels, the ICC is calculated using group effects and family-level effects from different models. See Schoot part 1.
+We can see that there is overall greater variance in the lme4 model (region: .14 vs .09, supermarket: .11 vs. .08, residual .08 vs . 1).
+
+A residual analysis reveals that the stan model overestimates some prices by twice as much as the lme model and that this effect applies up to the first quartile only.
 
 ```{r}
-summary(brms_model)$fixed
-summary(brms_model)$random
+summary(residuals(m1)) # not deviance residuals
+summary(residuals(m_lme))
 ```
 
+### Region Effects
 
-### Variance in Regions
+While the Bayesplot package offers quick "out of the box" visualization of MCMC draws, it's easy enough to extract draws and plot them in ggplot. (Just make sure you extract the right variables!)
 
-For the region, sd(Intercept) is 0.04, meaning that only a small amount of the variance is explained by the region. 
-
-```{r}
-sims <- as.matrix(brms_model)
-colnames(sims)[c(1020:1023)]
-sims <- sims[,c(1020:1023)]
+```{r regions boxplots}
+sims <- as.matrix(m1)
+colnames(sims)[c(1018:1021)]
+sims <- sims[,c(1018:1021)]
 sims <- as.data.frame(sims)
 colnames(sims) <- c("Kansas", "New York", "NorCal", "Texas")
 regions <- gather(sims, colnames(sims), key = "region", value = "price")
@@ -319,135 +347,76 @@ regions <- gather(sims, colnames(sims), key = "region", value = "price")
 ggplot(regions, aes(x = region, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.1, .1)
+  ylim(-.25, .25)
 ```
 
-### Variance in Supermarkets
+We can see that Norcal is the region with the highest prices.
+
+### Supermarkets Nested within Regions
 
 Indeed, there is quite a bit of variance of supermarkets within regions. 
 
-More of the variation is accounted for by the brand (0.11). 
-
-```{r}
-sims <- as.matrix(brms_model)
-colnames(sims)[c(1:17, 1017:1040)]
-sims <- sims[,c(1:17, 1017:1040)]
-colnames(sims)
+```{r plot supermarkets within regions}
+sims <- as.matrix(m1)
+colnames(sims)[c(1001:1017)] #17 different supermarkets
+sims <- sims[,c(1001:1017)]
 ###safeway
-safeway <- as.data.frame(sims)[,c(25, 33, 37)]
+colnames(sims)
+safeway <- as.data.frame(sims)[,c(1, 2, 3)]
 colnames(safeway) <- c("Kansas", "NorCal", "Texas")
 safeway <- gather(safeway, colnames(safeway), key = "safeway", value = "price")
 #tjs
-tjs <- as.data.frame(sims)[,c(26, 29, 34, 38)]
+tjs <- as.data.frame(sims)[,c(4, 5, 6, 7)]
 colnames(tjs) <- c("Kansas", "New York", "NorCal", "Texas")
 tjs <- gather(tjs, colnames(tjs), key = "tjs", value = "price")
 ###walmart
-walmart <- as.data.frame(sims)[,c(27, 30, 35, 39)]
+walmart <- as.data.frame(sims)[,c(8, 9, 10, 11)]
 colnames(walmart) <- c("Kansas", "New York", "NorCal", "Texas")
 walmart <- gather(walmart, colnames(walmart), key = "walmart", value = "price")
 ###Wegmans
-Wegmans <- as.data.frame(sims)[,c(28, 31, 40)]
+Wegmans <- as.data.frame(sims)[,c(12, 13, 14)]
 colnames(Wegmans) <- c("Kansas", "New York", "Texas")
 Wegmans <- gather(Wegmans, colnames(Wegmans), key = "Wegmans", value = "price")
 ###wholefoods
-wholefoods <- as.data.frame(sims)[,c(32, 36, 41)]
+wholefoods <- as.data.frame(sims)[,c(15, 16, 17)]
 colnames(wholefoods) <- c("New York", "Norcal", "Texas")
 wholefoods <- gather(wholefoods, colnames(wholefoods), key = "wholefoods", value = "price")
-###nested_sd
-nested_sd <- as.data.frame(sims)[,c(19)]
-nested_sd <- as.data.frame(nested_sd)
-colnames(nested_sd) <- c("price")
-nested_sd$nested_sd <- rep("nested_sd", nrow(nested_sd))
-
 
 ###
 p1 <- ggplot(safeway, aes(x = safeway, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.5, .5)
+  ylim(-.25, .25)
 p2 <- ggplot(tjs, aes(x = tjs, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.5, .5)
+  ylim(-.25, .25)
 p3 <- ggplot(walmart, aes(x = walmart, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.5, .5)
+  ylim(-.25, .25)
 p4 <- ggplot(Wegmans, aes(x = Wegmans, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.5, .5)
+  ylim(-.25, .25)
 p5 <- ggplot(wholefoods, aes(x = wholefoods, y = price)) +
   geom_boxplot() +
   coord_flip() +
-  ylim(-.5, .5)
-'
-p6 <- ggplot(nested_sd, aes(x = nested_sd, y = price)) +
-  geom_boxplot() +
-  coord_flip() +
-  ylim(-.5, .5)
-' 
+  ylim(-.25, .25)
 grid.arrange(p1, p2, p3, p4, p5, ncol=1)
 ```
 
-### Bayesplot
+Pricing looks pretty consistent across regions. Is it even worth nesting?
 
-```{r}
-options(max.print=10000)
-posterior <- as.array(brms_model)
-dim(posterior)
-parnames(brms_model)[1020:1023]
-pars = parnames(brms_model)[1020:1023]
-```
+### Model Comparison with Loo
 
-
-```{r}
-color_scheme_set("green")
-```
-
-posterior uncertainty intervals
-
-```{r}
-mcmc_intervals(posterior, pars = pars)
-```
-
-Posterior density curves
-
-```{r}
-mcmc_areas(
-  posterior,
-  pars = pars,
-  prob = 0.8, # 80% intervals
-  prob_outer = 0.99, # 99%
-  point_est = "mean"
-)
-```
-
-Univariate marginal posterior distributions
-
-```{r}
-mcmc_hist(posterior, pars = pars)
-```
-
-```{r}
-mcmc_dens(posterior, pars = pars)
-```
-
-
-### Model Comparison
-
-
-```{r, fixed effects model}
-priors <- get_prior(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
-              data = model_data)
-
-prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("exponential(1)", class = "sigma"))
-
-fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + UPC - 1,
+```{r non-nested model}
+m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
               data = model_data, 
-              family = gaussian(),
-              prior = prior1,
+              family = gaussian,
+              prior = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
               chains = 1,
               iter = 100,
@@ -456,245 +425,30 @@ fixed_effects <- brm(formula = price_norm ~ region_id + banner_id + store_id + U
               refresh = 1)
 ```
 
+Loo uses leave-one-out validation to compare the expected log density. That sounds complicated, but it's really not that different from RMSE using density estimates on the modeled statistical distributions.
 
-```{r, random effects no nesting}
-priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
-              data = model_data)
-
-prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("exponential(1)", class = "sigma"),
-            set_prior("exponential(1)", class = "sd"))
-
-random_no_nest <- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + store_id + UPC - 1,
-              data = model_data, 
-              family = gaussian(),
-              prior = prior1,
-              cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
-              seed = 1, 
-              refresh = 1)
+```{r loo comparison}
+loo(m1, m2)
 ```
 
-```{r banner random and nested}
-prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("exponential(1)", class = "sigma"),
-            set_prior("exponential(1)", class = "sd"))
+The non-nested model fits better. 
 
-random_nest_both <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + (1|banner_id) + store_id + UPC,
-              data = model_data, 
-              family = gaussian(),
-              prior = prior1,
-              cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
-              seed = 1, 
-              refresh = 1)
-```
-
-```{r missing store_id}
-priors <- get_prior(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
-              data = model_data)
-
-prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
-            set_prior("exponential(1)", class = "sigma"),
-            set_prior("exponential(1)", class = "sd"))
-
-no_store_id<- brm(formula = price_norm ~ (1|region_id) + (1|banner_id) + UPC - 1,
-              data = model_data, 
-              family = gaussian(),
-              prior = prior1,
-              cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
-              seed = 1, 
-              refresh = 1)
-```
-
-```{r}
-loo(brms_model, fixed_effects, random_no_nest, random_nest_both, no_store_id)
-```
-
-MLM fits better by an SE of 11.9. Which means what?
-
-
-### Model Checking with Loo
-
-```{r}
-loo1 <- loo(brms_model, save_psis = TRUE)
-```
-
-```{r}
-print(loo1)
-```
-Too many bad observations.
-
-```{r}
-plot(loo1)
-```
-
-### PPC
+### Posterior Predictive Check
 
 Using Bayesplot
 
-```{r}
-pp_check(brms_model)
-```
-
-Using ShinyStan
-```{r}
-y <- as.numeric(model_data$price_norm)
-y_rep <- posterior_predict(m1)
-launch_shinystan(brms_model)
-```
-
-Using Loo
-
-```{r}
-yrep <- posterior_predict(brms_model)
-
-ppc_loo_pit_overlay(
-  y = as.numeric(model_data$price_norm),
-  yrep = yrep,
-  lw = weights(loo1$psis_object)
-)
-```
-
-### Prediction
-
-```{r}
-colnames(model_data)
-unique(model_data$banner_id)
-unique(model_data$region_id)
-
-newdata <- data.frame(banner_id = 'Walmart', 
-                      region_id = 'New York',
-                      UPC = NA,
-                      store_id = NA)
-predict(brms_model, newdata = newdata, re_formula = NA)
-```
-
-### Misc.
-
-
-```{r}
-prior_summary(brms_model)
-```
-
-```{r}
-summary(brms_model, pars = pars, 
-        probs = c(0.025, 0.975),
-        digits = 2)$summary
+```{r ppc}
+pp_check(m1)
 ```
 
 
-```{r}
-plot(brms_model, N = 2, ask = TRUE, pars = pars, probs = c(0.025, 0.975))
-```
+### Conclusions
 
-```{r}
-mcmc_plot(brms_model, pars = pars)
-```
+A 3 level model offers the best results, with regions having a price premium of, and supermarkets having a price premium of...
 
-```{r}
-plot(conditional_effects(brms_model), 
-     points = TRUE,
-     pars = pars) 
-```
-
-```{r}
+```{r 3 level model}
+sims <- as.matrix(m1)
+colnames(sims)[c(1001:1017)] #17 different supermarkets
 posterior_interval(sims, prob = 0.95, pars = pars)
 apply(sims, 2, median)
 ```
-
-```{r}
-summary(residuals(brms_model)) # not deviance residuals
-```
-
-```{r}
-cov2cor(vcov(brms_model))
-```
-
-
-
-```{r}
-parnames(random_no_nest)
-#note that specific levels are not to be included
-pars = c("r_region_id",
-         "r_banner_id",
-         "sd_region_id__Intercept",
-         "sigma")
-options(max.print=10000)
-mcmc_plot(random_no_nest, pars = pars)
-```
-Print includes fixed effects.
-
-```{r}
-print(m1, digits = 2)
-```
-
-Summary includes random effects.
-
-```{r}
-summary(m1, 
-        #pars = c("(Intercept)"), 
-        probs = c(0.025, 0.975),
-        digits = 2)
-
-```
-
-See the stan code.
-
-```{r}
-rstan::get_stanmodel(m1$stanfit) 
-```
-
-Coefficients for random effects.
-
-```{r}
-coefficients(m1)
-```
-
-```{r}
-names(m1)
-```
-
-```{r}
-sims <- as.matrix(m1)
-dim(sims)
-colnames(sims)
-```
-
-```{r}
-posterior_interval(m1, prob = 0.95, pars = 'region_idNew York')
-```
-
-```{r}
-cbind(median = coef(m1), MAD_SD = se(m1))
-```
-
-```{r}
-summary(residuals(m1)) # not deviance residuals
-```
-
-```{r}
-cov2cor(vcov(m1))
-```
-
-```{r}
-launch_shinystan(m1, ppd = FALSE)
-```
-
-```{r}
-y <- as.numeric(model_data$price_norm)
-
-y_rep <- posterior_predict(m1)
-```
-
-```{r}
-loo_m1 <- waic(m1) #waic works!
-```
-
