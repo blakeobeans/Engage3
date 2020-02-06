@@ -1,2 +1,8 @@
 brms.RData
+<<<<<<< HEAD
 rstanarmfull.RData
+=======
+brms2.RData
+brms3.RData
+rstanarm.RData
+>>>>>>> 938009ef70d51446eeb25b00d8def5b86f978f0b

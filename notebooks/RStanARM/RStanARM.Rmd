@@ -15,127 +15,440 @@ library(rstanarm)
 library(loo)
 library(tidyverse)
 library(bayesplot)
-theme_set(bayesplot::theme_default())
+library(shinystan)
 library(here)
+library(lme4)
+library(gridExtra)
 setwd(here())
-here()
 ```
+
+As always, prep RStan to run on multiple cores.
 
 ```{r}
 rstan_options(auto_write = TRUE) #cache model
 options(mc.cores = parallel::detectCores()) #multiple cores for multiple chains
 ```
 
-
-We'll be doing some 2, 3 and even 4-level models in Stan, then comparing them using the Loo package.
+I recently had the opportunity to interview with Engage3. Engage3 is a company that does... I have some experience in this field, having written my undergrade thesis on collusion in agricultural products using super-market data. They sent me a dataset with some questions that they wanted me to answer using statistical modeling. That's the subject of this article. 
 
 ### The Data
 
+Engage3 sends auditors into stores to gather prices on various items. So the dataset contains prices for items (with the UPC provided). For each item, along with the UPC, we have data on the store_id, the supermarket ("banner") and the region. 
 
 ```{r}
 model_data <- read.csv("data/model_data.csv")
-```
-
-
-```{r}
 colnames(model_data) <- c("Price", "store_id", "UPC", "banner_id", "region_id")
-str(model_data)
 model_data$store_id <- as.factor(model_data$store_id)
 model_data$UPC <- as.factor(model_data$UPC)
-length(unique(model_data$UPC))
+sample_n(model_data, 5)
 ```
 
+There are four different regions: Kansas, NY, NorCal and Texas. There are 5 different supermarkets ("banner_id"): Whole Foods, Safeway, Walmart, Wegans and Trade Joes. There are 17 different stores and 1000 different UPCs.
+
+### The Questions
+
+There were two questions on the application, first, do different regions charge more than others, and if so, by how much? Second, do different super-market brands charge more than others, and if so, by how much?
+
+### Exploratory Analysis
+
+Even the optimal Box-Cox logrithmic transformation of the price variable (the dependent variable) gives a pretty skewed distribution, so we'll scale the data in order to sample efficiency. Thus, the beta coefficients will have a "standard deviation" interpretation, and we'll use the gaussian family in the regression model.
+
 ```{r}
+qplot(scale(model_data$Price))
 model_data$price_norm = scale(model_data$Price)
 ```
 
+How many of each stores are within each super-market within each region? Dplyr to the rescure.
+
 ```{r}
-levels(model_data$banner_id)
+model_data %>% group_by(region_id, banner_id) %>% 
+  summarise(n = sum(length(unique(store_id))))
 ```
 
-The regressand is the price of an item. Regressors include the UPC of the item, the specific store, the supermarket brand, and the region.
+There are only 4/5 super-markets in each region except for Texas. The UPC data comes from one super-market in each region.
+
+There is an old joke in Freedmans "Hidden Order" about two supermarkets advertising that they have the lowest prices. This is only true as long as they have the lowest prices on different goods. So, in comparing super-markets, we need to compare them on the basis of the same items. There are 1000 unique super-market items in the dataset.  
+
+```{r}
+model_data_spread <- model_data %>% select(-Price) %>% spread(key = UPC, value = price_norm)
+d <- nrow(model_data_spread) - colSums(is.na(model_data_spread))
+quickplot(d) + ggtitle("Frequency Distribution- Number of Items per Store")
+```
+
+Typically, each item appears in 10 out of 17 stores on average.
 
 ### The Model
 
+In order to answer the questions, I would lean more towards a regression framework than a machine learning or deep learning framework. This is because I'm trying to estimate model parameters, not predict outcomes. 
+
+This dataset allows one to estimate pricing across regions and supermarkets. The problem seems straightfoward enough- regress the prices on the UPC, store_id, super-market and region.
+
+However, the hierarchical *structure* of the dataset suggests that  a multi-level model (MLM) would more accurately estimate the parameters of interest. There are three levels to the data: stores nested within super-markets nested within regions, with the items are spread across those regions. 
+
+Typically, non-MLM models would overestimate the differences between super-markets and regions. In order to test test this theory to the data, we'll compare a standard model to a MLM model.
+
+#### Why Bayes?
+
+The model will be executed in a Bayesian framework using Stan. The justification for Bayesian methods in this case is the limited number of super-markets in each region. There is at most one super-market in each region, making estimation of the "super-market effect" difficult. Prior distributions allow us to model the initial distribution of each nested effect prior to looking at the data.  
+
+```{r lme4 model}
+m_lme <- lme4::lmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
+              data = model_data)
+
+```
+
+
+#### Package Selection
+
+Initially, this project was coded in Stan.[link here] As the project progressed, most advisors in the Stan forums recommended either the BRMS package or RStanARM. Both packages utilie Stan for sampling but present use the familiar LME4 package syntax for coding multi-level models.
+
+BRMS and RStanARM are more similar than different. Initially, BRMS was chosen for its ability eport raw Stan code and Stan data objects. However, RStanARM allows the eport of the model's Shiny object to ShinyApps.io, which allows permanent hosting of the ShinyStan model.
+
+
+#### Prior Selection 
+
+Priors on the regression coefficients are all standard normal. These are regularizing priors.
+
+Recall that the dependent variable is scaled with an approximate range between -2 and 2. Furthermore, all predictors are factors. Technically, the model is a mixed effects ANOVA, but we're interested in interpreting regression coefficients. 
+
+Thus, given the range of scaled prices, the a prioir effect of a certain level of any factor is unlikely to be more than a single standard deviation, and this is before statistically adjusting for the effect of the item itself, which will likely explain most of the variation in price (the relative cost of milk to a potato is much more likely to be explained by the production costs of the item itself than the region or super-market that the item is sold in.)
+
+Exponential priors for for the model variance are used.
+
+#### Fixed vs. Random Effects and Nesting
+
+The nesting structure is pretty straightforward. At the store level, we have the UPC and the store_id. The next level is the super-market, which is nested within a given region by being modeled as an interaction effect. In the author's opinion it is a negelected point to mention that the nesting component of a multilevel is separate from the partial pooling component, with the former being represented in the model as an interaction and the latter being represented as each level having a shared prior distribution (in a Bayesian framework). The nesting structure allows us to ask, for example, does a Safeway and Norcal charge more than a Safeway in Kansas?
+
+The LME4 syntax emphasizes fixed vs. random effects, whose definitions are confusing at best and mis-leading at worst. Allow me to provide my own interpretation for assigning variables to one of each effect category.
+
+When it comes to deciding whether or not a variable qualifies as a fixed or random effect, there are many sources to help guide one's thinking, but the heuristic that I have found most useful is to ask: does it make sense to have an 'average level' for the parameter? This gets back to the notion of "partial pooling" and the Bayesian perspective of having shared hyper-parameters for the prior distribution. Let's apply this heuristic to each factor.
+
+For region_id, it makes sense to have an "average level." If you were to average all the regions in the US, and their average is something like the US itself. 
+
+For banner_id, does it make sense to have an "average super-market?" Again, yes it does. Although there is no "average supermarket" per se, Safeway feels something like an average super-market, with there being higher and lower-end substitutes. 
+
+For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. In fact, because there is only one banner_id for each store, it doesn't make sense to condition on the store.
+
+For UPC- does it make sense to have an average item? Absolutely not. You can't average milk and a potato. (Potato milkshake, anyone?)
+
+Thus, the model is written below:
+
 ```{r}
-m1 <- stan_glmer(formula = price_norm ~ region_id + region_id:banner_id + 
-                  banner_id + (1|banner_id:store_id) , #+ UPC
+m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
               data = model_data, 
               family = gaussian,
-              prior = normal(location = 0, scale = 1, autoscale = TRUE),
-              prior_intercept = normal(location = 0, scale = 1, autoscale = TRUE),
+              prior = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
               chains = 1,
-              seed = 1,
-              adapt_delta = 0.95)
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
 ```
 
 
+## Diagnostics
 
-Print includes fixed effects.
+### ShinyStan
+
+The first, and easiest, way to perform diagnostics...
+
+```{r shinystan}
+y <- as.numeric(model_data$price_norm) #for posterior pred check
+y_rep <- posterior_predict(m1) # for posterior pred check
+launch_shinystan(m1) #launch it
+###to save to shinyapps.io
+sso <- as.shinystan(m1) #convert to shiny object
+deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans') #deploy
+```
+
+### MCMC Diagnostics
+
+There are two sorts of diagnostics to perform: general MCMC diagnostics and then diagnostics that are unique to the sampling algorithm. We'll take the latter first.
+
+```{r, Betancourt's overview}
+source('scripts/stan_utility_rstanarm.R')
+check_div(m1)
+check_rhat(m1)
+check_n_eff(m1) 
+check_energy(m1)
+check_treedepth(m1)
+```
+
+#### NUTS diagnostics
+
+```{r diagnostics setup}
+l_post <- log_posterior(m1)
+nuts_p <- nuts_params(m1)
+
+names(m1$coefficients) #identify parameters of interest
+pars = names(m1$coefficients[1018:1021])
+```
+
+##### Divergence
+
+I don't think there's a way to extract the exact parameters that have divergent samples...
 
 ```{r}
-print(m1, digits = 2)
+color_scheme_set("darkgray")
+mcmc_parcoord(m1, np = nuts_p, pars = pars)
 ```
 
-Summary includes random effects.
-
-```{r}
-summary(m1, 
-        #pars = c("(Intercept)"), 
-        probs = c(0.025, 0.975),
-        digits = 2)
+```{r mcmc_pairs}
+mcmc_pairs(m1, 
+           np = nuts_p, 
+           pars = pars,  
+           off_diag_args = list(size = 0.75))
 ```
 
-See the stan code.
-
-```{r}
-rstan::get_stanmodel(m1$stanfit) 
+```{r mcmc_scatter}
+mcmc_scatter(
+  m1,
+  pars = pars[1:2],
+  #transform = list(tau = "log"), # can abbrev. 'transformations'
+  np = nuts_p,
+  size = 1
+)
 ```
 
-Coefficients for random effects.
-
-```{r}
-coefficients(m1)
+```{r mcmc_trace}
+color_scheme_set("mix-brightblue-gray")
+mcmc_trace(m1, pars = pars[1], np = nuts_p) +
+  xlab("Post-warmup iteration")
 ```
 
-```{r}
-names(m1)
+```{r mcmc_nuts_divergence}
+color_scheme_set("red")
+mcmc_nuts_divergence(nuts_p, l_post, chain = 1)
 ```
 
-```{r}
-sims <- as.matrix(m1)
-dim(sims)
-colnames(sims)
+##### Energy
+
+The two histograms should look the same. If not, you probably need to re-paramaterize.
+
+```{r mcmc_nuts_energy}
+color_scheme_set("red")
+mcmc_nuts_energy(np_ncp)
 ```
 
-```{r}
-posterior_interval(m1, prob = 0.95, pars = 'region_idNew York')
+#### General MCMC Diagnostics
+
+You can use the summary table as a basis to create other plots and tables.
+
+```{r create summary tibble}
+ m1_summary <- summary(m1) %>% 
+  as.data.frame() %>% 
+  mutate(variable = rownames(.)) %>% 
+  select(variable, everything()) %>% 
+  as_tibble()
 ```
 
-```{r}
-cbind(median = coef(m1), MAD_SD = se(m1))
+##### R-hat
+
+```{r mcmc_rhat}
+color_scheme_set("brightblue") # see help("color_scheme_set")
+rhats <- rhat(m1, pars = pars) #works as a CDF too
+mcmc_rhat(rhats) + yaxis_text(hjust = 1)
 ```
+
+```{r rhat histogram}
+m1_summary %>% 
+  ggplot(aes(Rhat)) + 
+  geom_histogram() 
+```
+
+##### Effective Sample Size
+
+The effective sample size is an estimate of the number of independent draws from the posterior distribution of the estimand of interest. The more the better, but you want most more than .1. Good to check with the autocorrelation plot (next).
+
+```{r mcmc_neff}
+ratios_cp <- neff_ratio(m1, pars = pars)
+#print(ratios_cp)
+mcmc_neff(ratios_cp, size = 2)
+```
+
+```{r neff histogram}
+iterations = m1[["stanfit"]]@sim[["iter"]]
+m1_summary %>% 
+  ggplot(aes(n_eff/iterations)) + 
+  geom_histogram() 
+```
+
+##### Autocorrelation
+
+NUTS is much better than Gibbs at reducing autocorrelation.
+
+```{r mcmc_acf}
+mcmc_acf(m1, pars = pars, lags = 10)
+```
+
+```{r mcmc_acf_bar}
+mcmc_acf_bar(m1, pars = pars, lags = 10)
+```
+
+### Model Summary
+
+First, I'll look at the results of the model and in particular, the variances. Then we'll answer the questions around comparing regions and supermarkets.
+
+```{r stan model summary}
+#str(m1, max = 1)
+options(max.print = 10) #used to limit coefficient summaries
+print(m1)
+```
+
+There are three errors terms: sigma, the region level and the nested banner within region.
+
+```{r mcmc_plot sigmas}
+pars= c("sigma", "Sigma[banner_id:region_id:(Intercept),(Intercept)]", "Sigma[region_id:(Intercept),(Intercept)]")
+posterior <- as.array(m1)
+mcmc_intervals(posterior, pars = pars) #from Bayesplot package
+```
+
+It's worth noting how small these error terms are, with a median noise of .1 standard errors.
+
+We can calculate the intraclass correlation coefficient at the regional level:
+
+```{r icc}
+.085^2/(.085^2 + .083^2 + .095^2) #regional variance
+.083^2/(.085^2 + .083^2 + .095^2) #supermarket variance
+.095^2/(.085^2 + .083^2 + .095^2) #residual variance
+```
+
+We can compare these to the lmer model.
+
+```{r lmer model summary}
+print(m_lme)
+```
+
+We can see that there is overall greater variance in the lme4 model (region: .14 vs .09, supermarket: .11 vs. .08, residual .08 vs . 1).
+
+A residual analysis reveals that the stan model overestimates some prices by twice as much as the lme model and that this effect applies up to the first quartile only.
 
 ```{r}
 summary(residuals(m1)) # not deviance residuals
+summary(residuals(m_lme))
 ```
 
-```{r}
-cov2cor(vcov(m1))
+### Region Effects
+
+While the Bayesplot package offers quick "out of the box" visualization of MCMC draws, it's easy enough to extract draws and plot them in ggplot. (Just make sure you extract the right variables!)
+
+```{r regions boxplots}
+sims <- as.matrix(m1)
+colnames(sims)[c(1018:1021)]
+sims <- sims[,c(1018:1021)]
+sims <- as.data.frame(sims)
+colnames(sims) <- c("Kansas", "New York", "NorCal", "Texas")
+regions <- gather(sims, colnames(sims), key = "region", value = "price")
+
+###
+ggplot(regions, aes(x = region, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
 ```
 
-```{r}
-launch_shinystan(m1, ppd = FALSE)
+We can see that Norcal is the region with the highest prices.
+
+### Supermarkets Nested within Regions
+
+Indeed, there is quite a bit of variance of supermarkets within regions. 
+
+```{r plot supermarkets within regions}
+sims <- as.matrix(m1)
+colnames(sims)[c(1001:1017)] #17 different supermarkets
+sims <- sims[,c(1001:1017)]
+###safeway
+colnames(sims)
+safeway <- as.data.frame(sims)[,c(1, 2, 3)]
+colnames(safeway) <- c("Kansas", "NorCal", "Texas")
+safeway <- gather(safeway, colnames(safeway), key = "safeway", value = "price")
+#tjs
+tjs <- as.data.frame(sims)[,c(4, 5, 6, 7)]
+colnames(tjs) <- c("Kansas", "New York", "NorCal", "Texas")
+tjs <- gather(tjs, colnames(tjs), key = "tjs", value = "price")
+###walmart
+walmart <- as.data.frame(sims)[,c(8, 9, 10, 11)]
+colnames(walmart) <- c("Kansas", "New York", "NorCal", "Texas")
+walmart <- gather(walmart, colnames(walmart), key = "walmart", value = "price")
+###Wegmans
+Wegmans <- as.data.frame(sims)[,c(12, 13, 14)]
+colnames(Wegmans) <- c("Kansas", "New York", "Texas")
+Wegmans <- gather(Wegmans, colnames(Wegmans), key = "Wegmans", value = "price")
+###wholefoods
+wholefoods <- as.data.frame(sims)[,c(15, 16, 17)]
+colnames(wholefoods) <- c("New York", "Norcal", "Texas")
+wholefoods <- gather(wholefoods, colnames(wholefoods), key = "wholefoods", value = "price")
+
+###
+p1 <- ggplot(safeway, aes(x = safeway, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+p2 <- ggplot(tjs, aes(x = tjs, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+p3 <- ggplot(walmart, aes(x = walmart, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+p4 <- ggplot(Wegmans, aes(x = Wegmans, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+p5 <- ggplot(wholefoods, aes(x = wholefoods, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+grid.arrange(p1, p2, p3, p4, p5, ncol=1)
 ```
 
-```{r}
-y <- as.numeric(model_data$price_norm)
+Pricing looks pretty consistent across regions. Is it even worth nesting?
 
-y_rep <- posterior_predict(m1)
+### Model Comparison with Loo
+
+```{r non-nested model}
+m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
+              data = model_data, 
+              family = gaussian,
+              prior = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
+              cores = 4,
+              chains = 1,
+              iter = 100,
+              warmup = 20,
+              seed = 1, 
+              refresh = 1)
 ```
 
-```{r}
-loo_m1 <- waic(m1) #waic works!
+Loo uses leave-one-out validation to compare the expected log density. That sounds complicated, but it's really not that different from RMSE using density estimates on the modeled statistical distributions.
+
+```{r loo comparison}
+loo(m1, m2)
 ```
 
+The non-nested model fits better. 
+
+### Posterior Predictive Check
+
+Using Bayesplot
+
+```{r ppc}
+pp_check(m1)
+```
+
+
+### Conclusions
+
+A 3 level model offers the best results, with regions having a price premium of, and supermarkets having a price premium of...
+
+```{r 3 level model}
+sims <- as.matrix(m1)
+colnames(sims)[c(1001:1017)] #17 different supermarkets
+posterior_interval(sims, prob = 0.95, pars = pars)
+apply(sims, 2, median)
+```

@@ -1,0 +1,80 @@
+---
+title: "RStanARM Extra"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+### MCMC Draws
+
+```{r}
+posterior <- as.array(m1)
+#dim(posterior)
+```
+
+```{r mcmc_intervals}
+color_scheme_set("red")
+mcmc_intervals(posterior, pars = pars)
+```
+
+```{r mcmc_areas}
+mcmc_areas(
+  posterior,
+  pars = pars,
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.99, # 99%
+  point_est = "mean"
+)
+```
+
+```{r mcmc_hist}
+color_scheme_set("blue")
+mcmc_hist(posterior, pars = pars) #also see hist_by_chain
+```
+
+```{r mcmc_dens}
+color_scheme_set("purple")
+mcmc_dens(posterior, pars = pars) #also see mcmc_dens_overlay, mcmc_violin, 
+```
+
+
+### Prediction
+
+```{r}
+colnames(model_data)
+unique(model_data$banner_id)
+unique(model_data$region_id)
+
+newdata <- data.frame(banner_id = 'Walmart', 
+                      region_id = 'New York',
+                      UPC = NA,
+                      store_id = NA)
+predict(brms_model, newdata = newdata, re_formula = NA)
+```
+
+### PPC
+
+Using ShinyStan
+```{r}
+y <- as.numeric(model_data$price_norm)
+y_rep <- posterior_predict(m1)
+launch_shinystan(m1)
+```
+
+Using Loo
+
+```{r}
+yrep <- posterior_predict(brms_model)
+
+ppc_loo_pit_overlay(
+  y = as.numeric(model_data$price_norm),
+  yrep = yrep,
+  lw = weights(loo1$psis_object)
+)
+```
+
+### Misc.
+
+```{r}
+cov2cor(vcov(m1))
+```
