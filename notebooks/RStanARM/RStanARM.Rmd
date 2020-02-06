@@ -354,7 +354,7 @@ We can see that Norcal is the region with the highest prices.
 
 ### Supermarkets Nested within Regions
 
-Indeed, there is quite a bit of variance of supermarkets within regions. 
+Indeed, there is quite a bit of variance of supermarkets within regions. Keep in mind these are a comparison of random effects.
 
 ```{r plot supermarkets within regions}
 sims <- as.matrix(m1)
@@ -435,12 +435,11 @@ The non-nested model fits better.
 
 ### Posterior Predictive Check
 
-Using Bayesplot
+Using Bayesplot. We can see that our model doesn't fit well at the extremes.
 
 ```{r ppc}
 pp_check(m1)
 ```
-
 
 ### Conclusions
 
