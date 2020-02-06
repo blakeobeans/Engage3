@@ -11,7 +11,7 @@ knitr::opts_chunk$set(eval = FALSE)
 
 ```{r, message = FALSE, warning = FALSE}
 library(rstan)
-library(brms)
+library(rstanarm)
 library(loo)
 library(tidyverse)
 library(bayesplot)
@@ -99,10 +99,17 @@ Recall that the dependent variable is scaled with an approximate range between -
 
 Thus, given the range of scaled prices, the a prioir effect of a certain level of any factor is unlikely to be more than a single standard deviation, and this is before statistically adjusting for the effect of the item itself, which will likely explain most of the variation in price (the relative cost of milk to a potato is much more likely to be explained by the production costs of the item itself than the region or super-market that the item is sold in.)
 
+```{r}
+curve(dexp, xlim=c(0,10))
+```
+
+
 Exponential priors for for the model variance are used.
 
+NOTE BELOW IS FOR BRMS
 ```{r}
-priors <- get_prior(formula = price_norm ~ (1|region_id/banner_id) - 1 + store_id + UPC,              data = model_data)
+priors <- get_prior(formula = price_norm ~ (1|region_id/banner_id) + UPC - 1,
+                    data = model_data)
 
 prior1 <- c(set_prior("normal(0,1)", class = "b"), #includes intercept I think...
             set_prior("exponential(1)", class = "sigma"),
@@ -126,20 +133,43 @@ For UPC- does it make sense to have an average item? Absolutely not. You can't a
 Thus, the model is written below:
 
 ```{r}
+<<<<<<< HEAD
+m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) + UPC - 1,
+=======
 brms_model <- brm(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
+>>>>>>> 938009ef70d51446eeb25b00d8def5b86f978f0b
               data = model_data, 
-              family = gaussian(),
-              prior = prior1,
+              family = gaussian,
+              prior = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
+<<<<<<< HEAD
+              chains = 4,
+              iter = 1000,
+              warmup = 250,
+=======
               chains = 1,
               iter = 100,
               warmup = 20,
+>>>>>>> 938009ef70d51446eeb25b00d8def5b86f978f0b
               seed = 1, 
-              refresh = 1)
+              refresh = 1,
+              control = list(max_treedepth = 15,
+                             adapt_delta = 0.95))
 ```
 
+<<<<<<< HEAD
+```{r}
+save.image("data/rstanarmfull.RData")
+```
+
+
+Given over 10,000 observations and 1000 unique UPC's, this model will take a while to compile on a local machine. Thus, an R Studio AMI was created on AWS, with the instance running on 16 cores and many gigs of ram. While the AMI contained RStan 2.18 (current version as of 2/1/20 is 2.19.2), it did not contain the RStanARM or BRMS packages (and those packages could not be installed due to technical complications). 
+=======
 ### MCMC Diagnostics
 
+>>>>>>> 938009ef70d51446eeb25b00d8def5b86f978f0b
 
 The first, and easiest...
 
@@ -153,6 +183,7 @@ deploy_shinystan(my_sso, appName = "MyModel", account = "username")
 
 
 Select parameters
+
 
 ```{r}
 options(max.print=10000)
