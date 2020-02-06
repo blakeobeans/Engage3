@@ -134,18 +134,20 @@ For UPC- does it make sense to have an average item? Absolutely not. You can't a
 Thus, the model is written below:
 
 ```{r}
-m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) - 1 + UPC,
+m1 <- stan_glmer(formula = price_norm ~ (1|region_id/banner_id) + UPC - 1,
               data = model_data, 
               family = gaussian,
               prior = normal(location = 0, scale = 1, autoscale = FALSE),
               prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
               prior_aux = exponential(rate = 1, autoscale = FALSE),
               cores = 4,
-              chains = 1,
-              iter = 100,
-              warmup = 20,
+              chains = 4,
+              iter = 1000,
+              warmup = 250,
               seed = 1, 
-              refresh = 1)
+              refresh = 1,
+              control = list(max_treedepth = 15,
+                             adapt_delta = 0.95))
 ```
 
 
@@ -161,7 +163,7 @@ y_rep <- posterior_predict(m1) # for posterior pred check
 launch_shinystan(m1) #launch it
 ###to save to shinyapps.io
 sso <- as.shinystan(m1) #convert to shiny object
-deploy_shinystan(sso, "rstanarmapp", account = 'blakeobeans') #deploy
+deploy_shinystan(sso, "ShinyStan_Engage3", account = 'blakeobeans') #deploy
 ```
 
 ### MCMC Diagnostics
@@ -184,53 +186,32 @@ l_post <- log_posterior(m1)
 nuts_p <- nuts_params(m1)
 
 names(m1$coefficients) #identify parameters of interest
-pars = names(m1$coefficients[1018:1021])
+pars = names(m1$coefficients[1001:1021])
 ```
 
 ##### Divergence
 
-I don't think there's a way to extract the exact parameters that have divergent samples...
+The best way to visualize divergence for multiple parameters simultaneously is to use mcmc_parcoord.
 
 ```{r}
 color_scheme_set("darkgray")
-mcmc_parcoord(m1, np = nuts_p, pars = pars)
+mcmc_parcoord(m1, np = nuts_p, pars = pars) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
 
-```{r mcmc_pairs}
-mcmc_pairs(m1, 
-           np = nuts_p, 
-           pars = pars,  
-           off_diag_args = list(size = 0.75))
-```
-
-```{r mcmc_scatter}
-mcmc_scatter(
-  m1,
-  pars = pars[1:2],
-  #transform = list(tau = "log"), # can abbrev. 'transformations'
-  np = nuts_p,
-  size = 1
-)
-```
-
-```{r mcmc_trace}
-color_scheme_set("mix-brightblue-gray")
-mcmc_trace(m1, pars = pars[1], np = nuts_p) +
-  xlab("Post-warmup iteration")
-```
+We can see from the divergence charts that the divergent samples were mostly from chain 2. We can see that the divergent chains failed to trace out the full shape of the log-posterior (top right).
 
 ```{r mcmc_nuts_divergence}
 color_scheme_set("red")
-mcmc_nuts_divergence(nuts_p, l_post, chain = 1)
+mcmc_nuts_divergence(nuts_p, l_post, chain = 2)
 ```
 
 ##### Energy
 
-The two histograms should look the same. If not, you probably need to re-paramaterize.
+For each chain, the two histograms should look the same. If not, you probably need to re-paramaterize. Chains 1 and 3 look the most similar.
 
 ```{r mcmc_nuts_energy}
 color_scheme_set("red")
-mcmc_nuts_energy(np_ncp)
+mcmc_nuts_energy(nuts_p)
 ```
 
 #### General MCMC Diagnostics
@@ -247,11 +228,15 @@ You can use the summary table as a basis to create other plots and tables.
 
 ##### R-hat
 
+We can see that, for the region parameters, the r-hat did not adequately converge to 1. We have pretty good results for New York, but the rest are lacking. This means that we're getting different results in each chain. If I were submitting this work, I would run more iterations on my model. But for the purposes of this article, I will ignore the error.
+
 ```{r mcmc_rhat}
 color_scheme_set("brightblue") # see help("color_scheme_set")
 rhats <- rhat(m1, pars = pars) #works as a CDF too
 mcmc_rhat(rhats) + yaxis_text(hjust = 1)
 ```
+
+There are over 1000 parameters in the model, particularly all of the UPCs. The UPC's have only a few observations each. Thus, it is difficult to get exact estimates of the effect. This explains the high r-hats among the majority of the parameters.
 
 ```{r rhat histogram}
 m1_summary %>% 
@@ -261,7 +246,7 @@ m1_summary %>%
 
 ##### Effective Sample Size
 
-The effective sample size is an estimate of the number of independent draws from the posterior distribution of the estimand of interest. The more the better, but you want most more than .1. Good to check with the autocorrelation plot (next).
+The effective sample size is an estimate of the number of independent draws from the posterior distribution of the estimands of interest. The more the better, but you want most more than .1. Good to check with the autocorrelation plot (next).
 
 ```{r mcmc_neff}
 ratios_cp <- neff_ratio(m1, pars = pars)
@@ -278,15 +263,12 @@ m1_summary %>%
 
 ##### Autocorrelation
 
-NUTS is much better than Gibbs at reducing autocorrelation.
+NUTS is much better than Gibbs at reducing autocorrelation. We can see that chain 3 does remarkably better than the others.
 
 ```{r mcmc_acf}
 mcmc_acf(m1, pars = pars, lags = 10)
 ```
 
-```{r mcmc_acf_bar}
-mcmc_acf_bar(m1, pars = pars, lags = 10)
-```
 
 ### Model Summary
 
@@ -298,22 +280,12 @@ options(max.print = 10) #used to limit coefficient summaries
 print(m1)
 ```
 
-There are three errors terms: sigma, the region level and the nested banner within region.
-
-```{r mcmc_plot sigmas}
-pars= c("sigma", "Sigma[banner_id:region_id:(Intercept),(Intercept)]", "Sigma[region_id:(Intercept),(Intercept)]")
-posterior <- as.array(m1)
-mcmc_intervals(posterior, pars = pars) #from Bayesplot package
-```
-
-It's worth noting how small these error terms are, with a median noise of .1 standard errors.
-
 We can calculate the intraclass correlation coefficient at the regional level:
 
 ```{r icc}
-.085^2/(.085^2 + .083^2 + .095^2) #regional variance
-.083^2/(.085^2 + .083^2 + .095^2) #supermarket variance
-.095^2/(.085^2 + .083^2 + .095^2) #residual variance
+.11^2/(.11^2 + .13^2 + .085^2) #regional variance
+.13^2/(.11^2 + .13^2 + .085^2) #supermarket variance
+.085^2/(.11^2 + .13^2 + .085^2) #residual variance
 ```
 
 We can compare these to the lmer model.
@@ -322,24 +294,38 @@ We can compare these to the lmer model.
 print(m_lme)
 ```
 
-We can see that there is overall greater variance in the lme4 model (region: .14 vs .09, supermarket: .11 vs. .08, residual .08 vs . 1).
+We can see that the estimates of the variance are similar between the LME4 model and the Stan model. 
 
-A residual analysis reveals that the stan model overestimates some prices by twice as much as the lme model and that this effect applies up to the first quartile only.
+We can look at the credibility intervals for the variance parameters. We can see that the LME4 estimates fall within the intervals. (Note the sigmas for the parameters are variances around the intercept, not the error term itself.)
+
+```{r mcmc_plot sigmas}
+pars= c("sigma", "Sigma[banner_id:region_id:(Intercept),(Intercept)]", "Sigma[region_id:(Intercept),(Intercept)]")
+posterior_interval(m1, pars = pars)
+```
+
+A residual analysis reveals that both models provide almost identical range.
 
 ```{r}
 summary(residuals(m1)) # not deviance residuals
 summary(residuals(m_lme))
 ```
 
-### Region Effects
+### Analysis of MCMC Draws
 
 While the Bayesplot package offers quick "out of the box" visualization of MCMC draws, it's easy enough to extract draws and plot them in ggplot. (Just make sure you extract the right variables!)
 
+Furthermore, chain 3 looked like it had the best estimates (no divergences, the least autocorrelation), so we'll draw from this chain only.
+
+#### Region Effects
+
+We can see that Norcal is the region with the highest prices.
+
+
 ```{r regions boxplots}
-sims <- as.matrix(m1)
-colnames(sims)[c(1018:1021)]
-sims <- sims[,c(1018:1021)]
+sims <- as.array(m1)
+sims <- sims[,3,c(1018:1021)]
 sims <- as.data.frame(sims)
+colnames(sims)
 colnames(sims) <- c("Kansas", "New York", "NorCal", "Texas")
 regions <- gather(sims, colnames(sims), key = "region", value = "price")
 
@@ -350,18 +336,17 @@ ggplot(regions, aes(x = region, y = price)) +
   ylim(-.25, .25)
 ```
 
-We can see that Norcal is the region with the highest prices.
 
-### Supermarkets Nested within Regions
+#### Supermarkets Nested within Regions
 
 Indeed, there is quite a bit of variance of supermarkets within regions. Keep in mind these are a comparison of random effects.
 
 ```{r plot supermarkets within regions}
-sims <- as.matrix(m1)
-colnames(sims)[c(1001:1017)] #17 different supermarkets
-sims <- sims[,c(1001:1017)]
+sims <- as.array(m1)
+sims <- sims[,3,c(1001:1017)]
+sims <- as.data.frame(sims)
+colnames(sims) #17 different supermarkets
 ###safeway
-colnames(sims)
 safeway <- as.data.frame(sims)[,c(1, 2, 3)]
 colnames(safeway) <- c("Kansas", "NorCal", "Texas")
 safeway <- gather(safeway, colnames(safeway), key = "safeway", value = "price")
@@ -406,9 +391,11 @@ p5 <- ggplot(wholefoods, aes(x = wholefoods, y = price)) +
 grid.arrange(p1, p2, p3, p4, p5, ncol=1)
 ```
 
-Pricing looks pretty consistent across regions. Is it even worth nesting?
+Pricing looks pretty consistent across regions- Whole Foods is the most expensive, Walmart is the least.
 
 ### Model Comparison with Loo
+
+Given the consistent pricing across regions, one may ask- is it even worth nesting? We can build a model to test this assumption.
 
 ```{r non-nested model}
 m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,

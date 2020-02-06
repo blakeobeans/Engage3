@@ -5,6 +5,38 @@ editor_options:
   chunk_output_type: console
 ---
 
+### Divergences Extra
+
+```{r mcmc_pairs}
+mcmc_pairs(m1, 
+           np = nuts_p, 
+           pars = pars,  
+           off_diag_args = list(size = 0.75))
+```
+
+```{r mcmc_scatter}
+mcmc_scatter(
+  m1,
+  pars = pars[1:2],
+  #transform = list(tau = "log"), # can abbrev. 'transformations'
+  np = nuts_p,
+  size = 1
+)
+```
+
+```{r mcmc_trace}
+color_scheme_set("mix-brightblue-gray")
+mcmc_trace(m1, pars = pars[1], np = nuts_p) +
+  xlab("Post-warmup iteration")
+```
+
+### ACF Extras
+
+```{r mcmc_acf_bar}
+mcmc_acf_bar(m1, pars = pars, lags = 10)
+```
+
+
 ### MCMC Draws
 
 ```{r}

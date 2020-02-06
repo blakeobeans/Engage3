@@ -2,3 +2,5 @@ brms.RData
 brms2.RData
 brms3.RData
 rstanarm.RData
+brms_data.rda
+stan_data_dump.R
