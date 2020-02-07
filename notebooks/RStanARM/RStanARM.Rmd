@@ -53,17 +53,17 @@ There are four different regions: Kansas, NY, NorCal and Texas. There are 5 diff
 
 There were two questions on the application, first, which regions are more/less expensive and second, which super-market brands are more/less expensive? 
 
-As a burgeoning data scientist, I have a lot of tools in my toolbelt to approach such a question. My first thought is that, because I'm trying to estimate model parameters, I should use a regression framework. 
+As a burgeoning data scientist, I have a lot of tools in my toolbelt to approach such a question. My first thought is that, because I'm trying to estimate model parameters, I should adopy a regression framework. 
 
 The simplest model would be a linear regression of region, banner_id, store_id and UPC on prices. However, it is unlikely that this is the *best* model, given the structure of the data.
 
-The data exhibits a hierarchical *structure*: UPC items are within different super-markets, which are themselves within different regions. Given the structure of the data, a better (ie. more accurate) model would likely be a multi-level model (MLM).  
+The data exhibits a hierarchical *structure*: UPC items in stores are within different super-markets, which are themselves within different regions. Given the structure of the data, a better (ie. more accurate) model would likely be a multi-level model (MLM).  
 
-Why? Typically when dealing with structure data like the Engage3 dataset, standard models overestimate the "fixed" effects of a given variable. For example, if New York had a higher premium on groceries, that premium would be higher with a standard model. Multi-level models "pull" this regional effect back towards the "grand mean" for all regions in a way that is optimal. Of course, this doesn't need to be assumed true at face value, and these models can be compared. In fact, we'll do this near the end of the vignette. 
+Why? Typically when dealing with structure data like the Engage3 dataset, standard models overestimate the "fixed" effects of a given variable. For example, if New York had a higher premium on groceries, that premium would be higher with a standard model. Multi-level models "pull" this regional effect back towards the "grand mean" for all regions in a way that is optimal. 
 
 ### Exploratory Analysis
 
-Even the optimal Box-Cox logrithmic transformation of the price variable (the dependent variable) gives a pretty skewed distribution, so we'll scale the data in order to sample efficiency. Thus, the beta coefficients will have a "standard deviation" interpretation, and we'll use the gaussian family in the regression model.
+Even the optimal Box-Cox logrithmic transformation of the price variable (the dependent variable) gives a pretty skewed distribution, so we'll scale the data in order to improve sampling efficiency. Thus, the beta coefficients will have a "standard deviation" interpretation, and we'll use the gaussian family in the regression model.
 
 ```{r}
 qplot(scale(model_data$Price))
@@ -84,14 +84,14 @@ There is an old joke in Freedmans "Hidden Order" about two supermarkets advertis
 ```{r}
 model_data_spread <- model_data %>% select(-Price) %>% spread(key = UPC, value = price_norm)
 d <- nrow(model_data_spread) - colSums(is.na(model_data_spread))
-quickplot(d) + ggtitle("Frequency Distribution- Number of Items per Store")
+quickplot(d) + ggtitle("Frequency Distribution- Number of Items per Store") + theme(axis.title.x=element_blank())
 ```
 
 Typically, each item appears in 10 out of 17 stores on average.
 
-### The Model
+#### Modeling Approach
 
-
+Consistent with Gelman and Hill's recommendation, we'll start with a linear model, followed by using the non-Bayesian multi-level model, and then finish with a full-blown Bayesian regression in Stan. 
 
 #### Why Bayes?
 
@@ -133,7 +133,9 @@ For region_id, it makes sense to have an "average level." If you were to average
 
 For banner_id, does it make sense to have an "average super-market?" Again, yes it does. Although there is no "average supermarket" per se, Safeway feels something like an average super-market, with there being higher and lower-end substitutes. 
 
-For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. In fact, because there is only one banner_id for each store, it doesn't make sense to condition on the store.
+For store_id, does it make sense to have an average store? I would lean towards no. While there is conceptually an average super-market, there is no average store. Once you account for the brand, they're pretty much all the same- a Safeway is a Safeway is a Safeway. 
+
+Upon further review, because there is only one banner_id for each store, it doesn't make sense to condition on the store too. It would be like modeling someone's height as a function of arm length- you only need to include one arm.
 
 For UPC- does it make sense to have an average item? Absolutely not. You can't average milk and a potato. (Potato milkshake, anyone?)
 
@@ -181,7 +183,7 @@ There are two sorts of diagnostics to perform: general MCMC diagnostics and then
 ```{r, Betancourt's overview}
 source('scripts/stan_utility_rstanarm.R')
 check_div(m1)
-check_rhat(m1)
+#check_rhat(m1)
 check_n_eff(m1) 
 check_energy(m1)
 check_treedepth(m1)
@@ -203,7 +205,8 @@ The best way to visualize divergence for multiple parameters simultaneously is t
 
 ```{r}
 color_scheme_set("darkgray")
-mcmc_parcoord(m1, np = nuts_p, pars = pars) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+mcmc_parcoord(m1, np = nuts_p, pars = pars) + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank()) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
 
 We can see from the divergence charts that the divergent samples were mostly from chain 2. We can see that the divergent chains failed to trace out the full shape of the log-posterior (top right).
@@ -274,7 +277,8 @@ m1_summary %>%
 NUTS is much better than Gibbs at reducing autocorrelation. We can see that chain 3 does remarkably better than the others.
 
 ```{r mcmc_acf}
-mcmc_acf(m1, pars = pars, lags = 10)
+pars = names(m1$coefficients[1018:1021])
+mcmc_acf(m1, pars = pars, lags = 10) 
 ```
 
 
@@ -403,7 +407,7 @@ Pricing looks pretty consistent across regions- Whole Foods is the most expensiv
 
 ### Model Comparison with Loo
 
-Given the consistent pricing across regions, one may ask- is it even worth nesting? We can build a model to test this assumption.
+Given the consistent pricing across regions, one may ask- is it even worth nesting? After all, there is only at most one store for each supermarket in each region- this makes it pretty difficult to measure within-supermarket variation in each region.
 
 ```{r non-nested model}
 m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
@@ -419,7 +423,6 @@ m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
               seed = 1, 
               refresh = 1)
 ```
-
 
 Oh, and we can take this opportunity to compare the multi-level model to a standard regression. The prior in RStanARM is for how much of the variation is explained by the predictors.
 
@@ -451,13 +454,41 @@ m1_lm_waic[["estimates"]]
 m2_waic[["estimates"]]
 ```
 
+```{r}
+plot(m2_waic)
+```
 
 ### Posterior Predictive Check
 
-Using Bayesplot. We can see that our model doesn't fit well at the extremes.
+Bayesplot provides the easiest method for posterior predictive checks. Using the non-nested model, we can see that our model doesn't fit well at the extremes.
 
 ```{r ppc}
-pp_check(m1)
+pp_check(m2)
+```
+
+
+### Better Priors?
+
+While the priors for the random effects are likely overwhelmed by the data, it is likely that that priors for the fixed effects- UPC- are constraining the lowest and highest priced items and that this is affecting the posterior predictive check. To test this, I'll re-run the model with a wider variance.
+
+```{r non-nested model}
+m3 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
+              data = model_data, 
+              family = gaussian,
+              prior = normal(location = 0, scale = 3, autoscale = FALSE),
+              prior_intercept = normal(location = 0, scale = 1, autoscale = FALSE),
+              prior_aux = exponential(rate = 1, autoscale = FALSE),
+              cores = 4,
+              chains = 4,
+              iter = 250,
+              warmup = 50,
+              seed = 1, 
+              refresh = 1)
+```
+
+```{r}
+color_scheme_set("brightblue") # see help("color_scheme_set")
+pp_check(m3)
 ```
 
 ### Conclusions
@@ -465,13 +496,14 @@ pp_check(m1)
 A 3 level model offers the best results, with regions having a price premium of, and supermarkets having a price premium of...
 
 ```{r 3 level model}
-sims <- as.matrix(m2)
+sims <- as.matrix(m3)
+options(max.print = 100)
 pars <- colnames(sims)[c(1001:1009)] #17 different supermarkets
-posterior_interval(m2, prob = 0.95, pars = pars)
+posterior_interval(m2, prob = 0.5, pars = pars)
 ```
 
 ```{r m2 boxplots}
-sims <- as.matrix(m2)
+sims <- as.matrix(m3)
 sims <- sims[,c(1001:1009)]
 sims <- as.data.frame(sims)
 colnames(sims) <- c("Saveway", "TJs", "Walmart", "Wegmans", "Whole Foods", "Kansas", "New York", "NorCal", "Texas")
