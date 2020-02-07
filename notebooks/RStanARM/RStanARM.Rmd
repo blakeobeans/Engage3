@@ -420,6 +420,7 @@ m2 <- stan_glmer(formula = price_norm ~ (1|region_id) + (1|banner_id) - 1 + UPC,
               refresh = 1)
 ```
 
+
 Oh, and we can take this opportunity to compare the multi-level model to a standard regression. The prior in RStanARM is for how much of the variation is explained by the predictors.
 
 ```{r stan_lm}
@@ -438,11 +439,17 @@ m1_lm <- stan_lm(formula = price_norm ~ region_id + banner_id + UPC -1,
 
 Loo uses leave-one-out validation to compare the expected log density. That sounds complicated, but it's really not that different from RMSE using density estimates on the modeled statistical distributions.
 
-```{r loo comparison}
-loo(m1, m2, m1_lm)
-```
+There were some technical difficulties around using Loo- perhaps related to R Studio- but the waic comparison worked and show that the nested model has the lowest elpd score. In other words, the non-nested model fits better. 
 
-The non-nested model fits better. 
+```{r loo comparison}
+m1_waic <- waic(m1)
+m1_lm_waic <- waic(m1_lm)
+m2_loo_waic <- waic(m2)
+###compare
+m1_waic[["estimates"]]
+m1_lm_waic[["estimates"]]
+m2_loo_waic[["estimates"]]
+```
 
 ### Posterior Predictive Check
 
@@ -457,8 +464,22 @@ pp_check(m1)
 A 3 level model offers the best results, with regions having a price premium of, and supermarkets having a price premium of...
 
 ```{r 3 level model}
-sims <- as.matrix(m1)
-colnames(sims)[c(1001:1017)] #17 different supermarkets
-posterior_interval(sims, prob = 0.95, pars = pars)
-apply(sims, 2, median)
+sims <- as.matrix(m2)
+pars <- colnames(sims)[c(1001:1009)] #17 different supermarkets
+posterior_interval(m2, prob = 0.95, pars = pars)
 ```
+
+```{r m2 boxplots}
+sims <- as.matrix(m2)
+sims <- sims[,c(1001:1009)]
+sims <- as.data.frame(sims)
+colnames(sims) <- c("Saveway", "TJs", "Walmart", "Wegmans", "Whole Foods", "Kansas", "New York", "NorCal", "Texas")
+m2_df <- gather(sims, colnames(sims), key = "region_banner", value = "price")
+
+###
+ggplot(m2_df, aes(x = region_banner, y = price)) +
+  geom_boxplot() +
+  coord_flip() +
+  ylim(-.25, .25)
+```
+
