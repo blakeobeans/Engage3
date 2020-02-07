@@ -442,14 +442,15 @@ Loo uses leave-one-out validation to compare the expected log density. That soun
 There were some technical difficulties around using Loo- perhaps related to R Studio- but the waic comparison worked and show that the nested model has the lowest elpd score. In other words, the non-nested model fits better. 
 
 ```{r loo comparison}
-m1_waic <- waic(m1)
-m1_lm_waic <- waic(m1_lm)
-m2_loo_waic <- waic(m2)
+m1_waic <- waic(m1, cores = 4)
+m1_lm_waic <- waic(m1_lm, cores = 4)
+m2_waic <- waic(m2, cores = 4)
 ###compare
 m1_waic[["estimates"]]
 m1_lm_waic[["estimates"]]
-m2_loo_waic[["estimates"]]
+m2_waic[["estimates"]]
 ```
+
 
 ### Posterior Predictive Check
 
